@@ -1,0 +1,75 @@
+@import 'tailwindcss';
+@import './tokens.css';
+
+@layer base {
+  /* Tailwind v4 defaults border-color to currentColor. Hairlines are the primary
+     structural device here, so `border` alone must mean the token colour. */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border);
+  }
+
+  html {
+    /* 13px is the base UI size — everything defaults to it. */
+    font-size: 13px;
+    font-family: var(--font-sans);
+    color: var(--text);
+    background-color: var(--canvas);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    font-size: var(--text-13);
+    line-height: 1.45;
+    font-weight: var(--font-weight-normal);
+  }
+
+  /* Every numeral in a table, chart axis or metric readout is tabular. Applying it
+     to the table element covers the case by default so no cell can forget. */
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Visible focus on every interactive element: 2px accent at 2px offset. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* The browser default ring is replaced above, not merely widened. */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  ::selection {
+    background-color: var(--accent-sunk);
+  }
+}
+
+@layer components {
+  /*
+   * The two motion primitives. Popovers and dialogs fade in with a 2px rise;
+   * nothing else in the product animates.
+   */
+  @keyframes overlay-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes layer-in {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}

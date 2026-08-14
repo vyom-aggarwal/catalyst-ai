@@ -1,0 +1,179 @@
+/*
+ * The design system, as CSS. A literal transcription of DESIGN.md §1.
+ *
+ * Two layers:
+ *   1. Raw tokens on :root, named exactly as DESIGN.md names them. Dark mode
+ *      redefines these and nothing else.
+ *   2. An `@theme inline` block mapping them into Tailwind's utility namespaces.
+ *      `inline` substitutes the var() reference straight into each utility, so a
+ *      token redefined for dark mode propagates everywhere with no second class.
+ *
+ * Each namespace is reset with `--x-*: initial` before ours are declared. That
+ * deletes Tailwind's stock palette and type scale, so `bg-red-500`, `text-sm` and
+ * `rounded-xl` do not exist in this codebase. It is what makes the Phase 1 gate —
+ * these tokens being the only source of colour and type — mechanically true rather
+ * than a matter of discipline.
+ */
+
+:root {
+  /* --- surfaces --- */
+  --canvas: #fbfbfa;
+  --surface: #ffffff;
+  --surface-sunk: #f5f5f4;
+
+  /* --- structure: the 1px hairline is the primary structural device --- */
+  --border: #e7e5e4;
+  --border-strong: #d6d3d1;
+
+  /* --- text --- */
+  --text: #1c1917;
+  --text-muted: #57534e;
+  /* Placeholder, disabled and ornament only — 2.6:1, never load-bearing text.
+     Low confidence is encoded by desaturation plus an explicit ± interval,
+     never by making text transparent. See DESIGN.md §1.3. */
+  --text-faint: #a8a29e;
+
+  /* --- the one accent: interactive affordances and selection only --- */
+  --accent: #1d4ed8;
+  --accent-sunk: #eff4ff;
+
+  /* --- semantics: reserved for meaning, never decoration --- */
+  --positive: #15803d;
+  --negative: #b91c1c;
+  --warn: #b45309;
+
+  /* --- elevation: exactly two shadows exist in this application --- */
+  --shadow-popover-value: 0 4px 12px -2px rgb(28 25 23 / 8%), 0 2px 4px -2px rgb(28 25 23 / 6%);
+  --shadow-dialog-value: 0 16px 48px -12px rgb(28 25 23 / 18%), 0 4px 12px -4px rgb(28 25 23 / 8%);
+}
+
+/*
+ * Dark mode. Real values, not inverted lightness: surfaces sit above the canvas,
+ * sunk surfaces below it, borders are white at low alpha so they read as hairlines.
+ *
+ * Defined but not reachable — no toggle ships until Phase 6, per the specification.
+ */
+[data-theme='dark'] {
+  --canvas: #131110;
+  --surface: #1c1917;
+  --surface-sunk: #0e0c0b;
+
+  --border: rgb(255 255 255 / 12%);
+  --border-strong: rgb(255 255 255 / 20%);
+
+  --text: #f5f5f4;
+  --text-muted: #a8a29e;
+  --text-faint: #78716c;
+
+  /* #1d4ed8 does not clear contrast on a dark canvas. */
+  --accent: #3b82f6;
+  --accent-sunk: #17233f;
+
+  --positive: #22c55e;
+  --negative: #f87171;
+  --warn: #f59e0b;
+
+  --shadow-popover-value: 0 4px 12px -2px rgb(0 0 0 / 40%), 0 2px 4px -2px rgb(0 0 0 / 30%);
+  --shadow-dialog-value: 0 16px 48px -12px rgb(0 0 0 / 60%), 0 4px 12px -4px rgb(0 0 0 / 40%);
+}
+
+@theme inline {
+  /* ------------------------------------------------------------------ colour */
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-inherit: inherit;
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-sunk: var(--surface-sunk);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-sunk: var(--accent-sunk);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-warn: var(--warn);
+
+  /* ------------------------------------------------------------- elevation */
+  --shadow-*: initial;
+  --shadow-popover: var(--shadow-popover-value);
+  --shadow-dialog: var(--shadow-dialog-value);
+
+  /* ---------------------------------------------------------------- radius */
+  --radius-*: initial;
+  --radius-control: 4px;
+  --radius-panel: 6px;
+  --radius-dialog: 8px;
+
+  /* ---------------------------------------------------------------- motion */
+  --ease-*: initial;
+  --ease-out-quint: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ------------------------------------------------------- fixed dimensions */
+  /* The 4px grid is Tailwind's default --spacing, so p-4 is 16px panel padding
+     and gap-6 is a 24px section gap. These are the sizes off that grid. */
+  --spacing-row: 30px;
+  --spacing-row-compact: 26px;
+  --spacing-control: 30px;
+  --spacing-control-sm: 26px;
+  --spacing-rail: 240px;
+  --spacing-inspector: 380px;
+}
+
+@theme {
+  /* ------------------------------------------------------------------- type */
+  /* Two faces. The next/font variables are set on <html> in layout.tsx. */
+  --font-*: initial;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  --font-weight-*: initial;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-strong: 560;
+
+  /* Six sizes exist. Anything else is off-scale and unavailable. */
+  --text-*: initial;
+
+  --text-11: 11px;
+  --text-11--line-height: 1.45;
+  --text-11--letter-spacing: 0.04em;
+
+  --text-12: 12px;
+  --text-12--line-height: 1.45;
+
+  --text-13: 13px;
+  --text-13--line-height: 1.45;
+
+  --text-15: 15px;
+  --text-15--line-height: 1.25;
+
+  --text-18: 18px;
+  --text-18--line-height: 1.25;
+
+  --text-24: 24px;
+  --text-24--line-height: 1.25;
+
+  /* ------------------------------------------------------------- durations */
+  --duration-fast: 120ms;
+  --duration-base: 160ms;
+}
+
+/*
+ * Reduced motion is handled once, globally. Individual components never re-check
+ * it — they animate opacity and transform and trust this to switch them off.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}

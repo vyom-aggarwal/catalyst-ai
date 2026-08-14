@@ -1,0 +1,80 @@
+# `docker compose up` should bring the whole stack up with seed data on a clean
+# machine, first try. The api service runs migrations and seeds before serving.
+#
+# The RQ worker is deliberately absent: job execution lands in Phase 4, and a
+# container that does nothing is worse than no container.
+
+name: catalyst-ai
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: catalyst
+      POSTGRES_PASSWORD: catalyst
+      POSTGRES_DB: catalyst
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U catalyst -d catalyst']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      DATABASE_URL: postgresql+psycopg://catalyst:catalyst@postgres:5432/catalyst
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: http://localhost:3000
+      CATALYST_PROVIDERS: mock
+    ports:
+      - '8000:8000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app
+    command: >
+      sh -c "alembic upgrade head
+      && python -m catalyst.seed
+      && uvicorn catalyst.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  web:
+    build:
+      context: .
+      dockerfile: ./apps/web/Dockerfile
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      WATCHPACK_POLLING: 'true'
+    ports:
+      - '3000:3000'
+    depends_on:
+      - api
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      # Anonymous volumes keep the container's installed dependencies from being
+      # shadowed by the host bind mount above.
+      - /app/node_modules
+      - /app/apps/web/node_modules
+      - /app/apps/web/.next
+    command: pnpm --filter @catalyst/web dev
+
+volumes:
+  postgres-data:
