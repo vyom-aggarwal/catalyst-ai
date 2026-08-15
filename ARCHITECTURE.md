@@ -53,6 +53,15 @@ Dependencies point downward only. A module never imports from a layer above it.
      │           imported. Each provider is self-contained and declares its own
      │           Capabilities. MockProvider lives here too.
      │
+  sources/       External retrieval and parsing: UniProt, RCSB, AlphaFold DB,
+     │           PDB and FASTA. No model runs here — these are downloads — which
+     │           is why they sit beside providers/ rather than inside it.
+     │
+  domain/        Pure logic with no I/O and no database: amino acid nomenclature,
+     │           mutation codes, numbering reconciliation. Everything here is a
+     │           function of its arguments, and is where the numbering rules in
+     │           §9 are actually enforced.
+     │
   models/        SQLModel tables (spec §8). No behaviour beyond validators.
      │
   db.py          Engine + session. Sync psycopg 3 — the same session code path is
@@ -192,3 +201,44 @@ so numbering is modelled explicitly rather than assumed:
 
 No layer is permitted to convert between schemes implicitly. Conversion is an explicit,
 audited operation in `services/`.
+
+### How reconciliation actually works
+
+1. **Exact correspondence first.** The chain is split into runs of consecutive author
+   numbering; every run must be placeable at one shared offset. The offset relates
+   author numbering to sequence index — *not* position within the resolved residues,
+   because author numbering stays continuous across an unresolved loop while the
+   resolved list does not. Indexing the resolved list would slide every residue after
+   a gap by the length of that gap.
+2. **More than one placement is a question, not a coin flip.** Repeats produce an
+   `AMBIGUOUS` outcome listing the candidates. The user picks.
+3. **Alignment is never reached automatically.** `reconcile()` returns
+   `NEEDS_ALIGNMENT` and stops. `align()` runs only on an explicit user action, and
+   reports every difference before anything is applied.
+4. **Insertion codes go straight to alignment.** 100/100A/100B occupy three sequence
+   positions but advance the author number once, so the constant-offset assumption
+   does not hold and is not approximated.
+
+Alignment is semi-global Needleman-Wunsch with affine gaps and **identity scoring, not
+BLOSUM62** — this maps a structure onto its own sequence, where the question is "which
+residue is which", not "are these homologous". A substitution matrix would let a
+chemically conservative difference slide into a match, which is the silent off-by-one
+being guarded against. End gaps are free so a partial construct is not penalised for
+the region it does not cover. The parameters are stored on every scheme produced this
+way and shown in the UI; an alignment whose parameters are not stated is not
+reproducible.
+
+### Stored schemes are label lists, not offsets
+
+`NumberingScheme.offsets` holds one label per sequence position, null where the scheme
+does not cover it. A single integer offset would be a lie for all three of the cases
+that actually occur: Ambler numbering skips residues by convention, crystal structures
+leave gaps, and insertion codes are not integers.
+
+### Confirming is separate from computing
+
+Saving a reconciled mapping creates a scheme. It does **not** make it canonical.
+`confirm_canonical` is a distinct call, writes a `ProvenanceEvent`, and is the only
+thing that makes a target designable. Until then the API refuses to render a mutation
+code at all, with a 409 — a code rendered against an unconfirmed scheme is precisely
+the ambiguity this phase removes.

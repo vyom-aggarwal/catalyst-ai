@@ -12,12 +12,15 @@ dependencies = [
     "alembic>=1.14.0",
     "redis>=5.2.1",
     "rq>=2.1.0",
+    # Promoted from a test-only dependency: Phase 2 retrieves sequences and
+    # structures from UniProt, RCSB and AlphaFold DB at runtime. It was already
+    # present because FastAPI's TestClient is built on it.
+    "httpx>=0.28.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.4",
-    "httpx>=0.28.1",
     "ruff>=0.8.6",
     "mypy>=1.14.1",
 ]

@@ -10,7 +10,9 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 
-DEFAULT_DATABASE_URL = "postgresql+psycopg://catalyst:catalyst@localhost:5432/catalyst"
+# Host port 5433, matching docker-compose.yml. Inside the compose network the
+# api service is given an explicit DATABASE_URL pointing at postgres:5432.
+DEFAULT_DATABASE_URL = "postgresql+psycopg://catalyst:catalyst@localhost:5433/catalyst"
 DEFAULT_REDIS_URL = "redis://localhost:6379/0"
 
 

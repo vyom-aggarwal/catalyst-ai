@@ -5,13 +5,14 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlmodel import Session, col
 
 from catalyst.db import get_session
 from catalyst.models import Experiment, Measurement, Project, Run, Target
+from catalyst.services import targets as service
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -90,3 +91,96 @@ def list_projects(session: Session = Depends(get_session)) -> list[ProjectRow]:
 
     rows = session.execute(statement).all()
     return [ProjectRow.model_validate(row, from_attributes=True) for row in rows]
+
+
+class CreateProjectIn(BaseModel):
+    name: str
+    organism: str | None = None
+    objective: str | None = None
+
+
+class TargetSummary(BaseModel):
+    id: uuid.UUID
+    name: str
+    organism: str | None
+    uniprot_accession: str | None
+    length: int
+    #: False until a canonical numbering scheme is confirmed. The project page
+    #: shows this prominently: an unreconciled target cannot be designed against.
+    is_designable: bool
+    canonical_scheme_label: str | None
+
+
+class ProjectDetail(BaseModel):
+    id: uuid.UUID
+    name: str
+    organism: str | None
+    objective: str | None
+    created_at: datetime
+    targets: list[TargetSummary]
+
+
+@router.post("", response_model=ProjectDetail, status_code=201)
+def create_project(body: CreateProjectIn, session: Session = Depends(get_session)) -> ProjectDetail:
+    try:
+        project = service.create_project(
+            session, name=body.name, organism=body.organism, objective=body.objective
+        )
+    except service.ServiceError as error:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(error), "remedy": error.remedy},
+        ) from error
+    return _detail(session, project)
+
+
+@router.get("/{project_id}", response_model=ProjectDetail)
+def get_project(project_id: uuid.UUID, session: Session = Depends(get_session)) -> ProjectDetail:
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "That project does not exist.",
+                "remedy": "Open one from the projects table.",
+            },
+        )
+    return _detail(session, project)
+
+
+def _detail(session: Session, project: Project) -> ProjectDetail:
+    # session.execute rather than session.exec: `select` here is SQLAlchemy's,
+    # imported for the aggregate query above, and exec() is typed for SQLModel's.
+    targets = (
+        session.execute(
+            select(Target)
+            .where(col(Target.project_id) == project.id)
+            .order_by(col(Target.created_at))
+        )
+        .scalars()
+        .all()
+    )
+
+    summaries: list[TargetSummary] = []
+    for target in targets:
+        canonical = service.canonical_scheme(session, target.id)
+        summaries.append(
+            TargetSummary(
+                id=target.id,
+                name=target.name,
+                organism=target.organism,
+                uniprot_accession=target.uniprot_accession,
+                length=len(target.sequence),
+                is_designable=canonical is not None,
+                canonical_scheme_label=canonical.label if canonical else None,
+            )
+        )
+
+    return ProjectDetail(
+        id=project.id,
+        name=project.name,
+        organism=project.organism,
+        objective=project.objective,
+        created_at=project.created_at,
+        targets=summaries,
+    )
