@@ -4,7 +4,7 @@ import Link from 'next/link'
 
 import { ErrorState } from '@/app/projects/error-state'
 import { Badge } from '@/components/ui/badge'
-import { ApiError, fetchGoals, fetchTarget } from '@/lib/api'
+import { ApiError, fetchGoals, fetchMeta, fetchTarget } from '@/lib/api'
 
 import { GoalComposer } from './goal-composer'
 
@@ -15,8 +15,9 @@ export default async function GoalPage({ params }: { params: Promise<{ id: strin
 
   let target
   let goals
+  let meta
   try {
-    ;[target, goals] = await Promise.all([fetchTarget(id), fetchGoals(id)])
+    ;[target, goals, meta] = await Promise.all([fetchTarget(id), fetchGoals(id), fetchMeta()])
   } catch (error) {
     if (error instanceof ApiError) {
       return <ErrorState message={error.message} remedy={error.remedy} />
@@ -58,6 +59,7 @@ export default async function GoalPage({ params }: { params: Promise<{ id: strin
           targetId={target.id}
           goal={goals[0] ?? null}
           disabled={!target.is_designable}
+          supportedObjectives={meta.supported_objectives}
         />
       </section>
 

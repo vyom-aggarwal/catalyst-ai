@@ -10,12 +10,62 @@
 import { z } from 'zod'
 
 /**
+ * A predictor as data. Everything the interface varies by model comes from
+ * here — never from naming a model in a component. See ARCHITECTURE.md §2.
+ */
+export const predictorSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  version: z.string(),
+  weights_hash: z.string(),
+  modality: z.string(),
+  citation: z.string(),
+  is_mock: z.boolean(),
+  objectives: z.array(z.string()),
+  requires: z.object({
+    structure: z.boolean(),
+    msa: z.boolean(),
+    max_length: z.number().int().nullable(),
+    gpu: z.boolean(),
+  }),
+  metrics: z.array(
+    z.object({
+      id: z.string(),
+      label: z.string(),
+      unit: z.string().nullable(),
+      /** Stated in the column header, and never changed. */
+      sign_convention: z.string(),
+      higher_is_better: z.boolean(),
+      reports_interval: z.boolean(),
+    }),
+  ),
+})
+
+export type Predictor = z.infer<typeof predictorSchema>
+
+/** Why a queued run is not moving. Two causes, both invisible from the run. */
+export const queueSchema = z.object({
+  connected: z.boolean(),
+  workers: z.number().int(),
+  queued: z.number().int(),
+  detail: z.string().nullable(),
+})
+
+export type QueueStatus = z.infer<typeof queueSchema>
+
+/**
  * Demo mode is the honesty switch. When true, a provider that fabricates numbers
- * is active and the interface must say so on every screen.
+ * is active and the interface must say so on every screen. The API derives it
+ * from the predictors themselves, so it cannot drift from what is running.
  */
 export const metaSchema = z.object({
   demo_mode: z.boolean(),
   providers: z.array(z.string()),
+  predictors: z.array(predictorSchema),
+  /** Objectives no active predictor supports are greyed out in the composer. */
+  supported_objectives: z.array(z.string()),
+  unknown_providers: z.array(z.string()),
+  queue: queueSchema,
 })
 
 export type Meta = z.infer<typeof metaSchema>
@@ -259,3 +309,181 @@ export const suggestionSchema = z.object({
 
 export type Suggestion = z.infer<typeof suggestionSchema>
 export const suggestionListSchema = z.array(suggestionSchema)
+
+/* -------------------------------------------------------------------- runs */
+
+export const runStatusSchema = z.enum([
+  'pending',
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+])
+
+export type RunStatus = z.infer<typeof runStatusSchema>
+
+export const stageStatusSchema = z.enum([
+  'pending',
+  'running',
+  'succeeded',
+  'failed',
+  'skipped',
+  'cancelled',
+])
+
+export type StageStatus = z.infer<typeof stageStatusSchema>
+
+/**
+ * The model version a stage used, exactly as the provenance trail records it.
+ * `is_mock` is what badges every number the stage produced — nothing in the web
+ * app decides that by looking at the model's name.
+ */
+export const modelVersionSchema = z.object({
+  id: z.string().uuid(),
+  model_id: z.string(),
+  name: z.string(),
+  version: z.string(),
+  weights_hash: z.string(),
+  modality: z.string(),
+  citation: z.string(),
+  is_mock: z.boolean(),
+})
+
+export type ModelVersion = z.infer<typeof modelVersionSchema>
+
+export const runStageSchema = z.object({
+  id: z.string().uuid(),
+  ordinal: z.number().int(),
+  name: z.string(),
+  status: stageStatusSchema,
+  runtime_ms: z.number().int().nullable(),
+  input_hash: z.string().nullable(),
+  logs: z.string().nullable(),
+  error: z.string().nullable(),
+  model: modelVersionSchema.nullable(),
+})
+
+export type RunStage = z.infer<typeof runStageSchema>
+
+export const runSchema = z.object({
+  id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  target_id: z.string().uuid(),
+  goal_id: z.string().uuid(),
+  status: runStatusSchema,
+  config: z.object({
+    predictors: z.array(z.string()).optional(),
+    max_variants: z.number().int().nullable().optional(),
+    override_constraints: z.boolean().optional(),
+  }),
+  input_hash: z.string(),
+  parent_run_id: z.string().uuid().nullable(),
+  created_at: z.string().datetime({ offset: true }),
+  started_at: z.string().datetime({ offset: true }).nullable(),
+  finished_at: z.string().datetime({ offset: true }).nullable(),
+  error: z.string().nullable(),
+  /** True when any model version in this run fabricates its numbers. */
+  is_demo: z.boolean(),
+  /** Terminal runs stop the client polling. Decided by the API, not here. */
+  is_terminal: z.boolean(),
+  stages: z.array(runStageSchema),
+})
+
+export type Run = z.infer<typeof runSchema>
+export const runListSchema = z.array(runSchema)
+
+/** One number, with the model version that produced it and whether it is real. */
+export const scoreCellSchema = z.object({
+  metric: z.string(),
+  value: z.number(),
+  uncertainty: z.number().nullable(),
+  ci_low: z.number().nullable(),
+  ci_high: z.number().nullable(),
+  model_version_id: z.string().uuid(),
+  model_id: z.string(),
+  is_mock: z.boolean(),
+})
+
+export type ScoreCell = z.infer<typeof scoreCellSchema>
+
+export const metricSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  unit: z.string().nullable(),
+  sign_convention: z.string(),
+  higher_is_better: z.boolean(),
+  reports_interval: z.boolean(),
+})
+
+export type Metric = z.infer<typeof metricSchema>
+
+export const rankedVariantSchema = z.object({
+  rank: z.number().int(),
+  /** Written in the canonical numbering scheme, never in sequence index. */
+  code: z.string(),
+  hgvs: z.string(),
+  label: z.string(),
+  sequence_position: z.number().int().nullable(),
+  /** Mean of the predictors' normalised ranks. Not a physical quantity. */
+  consensus: z.number(),
+  /** Null when only one predictor scored it — zero would read as unanimity. */
+  disagreement: z.number().nullable(),
+  sources_scored: z.number().int(),
+  cells: z.array(scoreCellSchema),
+})
+
+export type RankedVariant = z.infer<typeof rankedVariantSchema>
+
+export const rankingSchema = z.object({
+  run_id: z.string().uuid(),
+  scheme_label: z.string(),
+  metrics: z.array(metricSchema),
+  /** Metric id to the reason it has no values. The cell reads as an em dash. */
+  unavailable: z.record(z.string(), z.string()),
+  total_scored: z.number().int(),
+  total_filtered: z.number().int(),
+  total_ranked: z.number().int(),
+  budget: z.number().int().nullable(),
+  is_demo: z.boolean(),
+  rows: z.array(rankedVariantSchema),
+})
+
+export type Ranking = z.infer<typeof rankingSchema>
+
+/** Variants a constraint removed, each with the constraint that removed it. */
+export const filteredSchema = z.object({
+  run_id: z.string().uuid(),
+  override: z.boolean(),
+  kept: z.number().int(),
+  removed: z.record(z.string(), z.array(z.string())),
+  constrained_positions: z.record(z.string(), z.array(z.string())),
+})
+
+export type Filtered = z.infer<typeof filteredSchema>
+
+export const runDiffSchema = z.object({
+  run_id: z.string().uuid(),
+  parent_run_id: z.string().uuid(),
+  config_changes: z.array(
+    z.object({ key: z.string(), before: z.unknown(), after: z.unknown() }),
+  ),
+  stages: z.array(
+    z.object({
+      name: z.string(),
+      status_before: z.string().nullable(),
+      status_after: z.string(),
+      runtime_ms_before: z.number().int().nullable(),
+      runtime_ms_after: z.number().int().nullable(),
+      /** Identical input hash, so the stage did not re-execute. */
+      reused: z.boolean(),
+    }),
+  ),
+  scores: z.record(z.string(), z.number().int()),
+  entered: z.array(z.string()),
+  left: z.array(z.string()),
+  moved: z.array(
+    z.object({ code: z.string(), before: z.number().int(), after: z.number().int() }),
+  ),
+})
+
+export type RunDiff = z.infer<typeof runDiffSchema>

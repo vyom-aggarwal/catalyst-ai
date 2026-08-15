@@ -96,24 +96,84 @@ class Predictor(Protocol):
     version: str
     weights_hash: str
     modality: Literal["stability", "fitness", "structure", "generative"]
-    requires: Capabilities   # structure? MSA? max_len? GPU?
+    requires: Capabilities        # structure? MSA? max_len? GPU?
     citation: str
+    is_mock: bool                 # added — see below
+    objectives: frozenset[Objective]
+    metrics: tuple[MetricSpec, ...]
 
-    def score(self, variants: list[Variant], ctx: TargetContext) -> list[Score]: ...
+    def score(self, variants: list[VariantInput], ctx: TargetContext) -> list[ScoreValue]: ...
 ```
+
+Three deviations from the protocol as sketched in the specification, all made for the
+same reason — a provider must be unable to reach past its own seam:
+
+- **`score` returns `ScoreValue`, not `Score`.** A `Score` cannot exist without a run and
+  a model version (§5), and a provider knows about neither. `services/runs` is the only
+  thing that turns one into the other, and it cannot do so without both. This is the
+  integrity rule showing up in the type system: **a provider is structurally incapable of
+  writing an untraceable number.**
+- **`score` takes `VariantInput`, not the `Variant` table row.** A provider that took an
+  ORM row would need a database session. `VariantInput` is a pure dataclass, which is
+  also why every provider is testable with no database at all.
+- **`is_mock`, `objectives` and `metrics` are added.** They are what lets the interface
+  vary by model without ever naming one: `is_mock` drives the demo bar and the per-number
+  mark, `objectives` greys out what nothing supports, and `metrics` carries each column's
+  unit and sign convention so the convention lives with the provider rather than in a
+  component a second screen could contradict.
+
+Every attribute is declared read-only on the protocol. A predictor's identity is what the
+provenance trail is built on, and nothing may reassign it after the fact — which also
+lets implementations be frozen dataclasses.
 
 Implementations: `ESMScorer` (masked-marginal log-odds), `StabilityPredictor`
 (ThermoMPNN-shaped adapter), `StructureProvider` (AlphaFold DB / uploaded PDB / ESMFold),
 `MSAProvider`, `GenerativeProvider` (ProteinMPNN / RFdiffusion — for scaffold and binder
-tasks, **not** presented as a point-mutation oracle).
+tasks, **not** presented as a point-mutation oracle). As of Phase 4 only `MockProvider`
+exists, registered as two predictors so that disagreement is visible.
 
-**Every provider declares what it cannot do.** The UI greys out objectives that no
+**Every provider declares what it cannot do.** `Capabilities.unmet(ctx)` returns the
+reason a predictor cannot run here, or `None`. The pipeline skips it with that reason,
+which travels to the cell and is shown on hover. The UI greys out objectives that no
 available provider supports, rather than running them and returning something worthless.
+
+**Which predictors are active is derived, not configured twice.** `CATALYST_PROVIDERS`
+names ids; `services/providers` resolves them and answers *demo mode* from
+`Predictor.is_mock`, not from the string `mock` appearing in an environment variable.
+Those two answers agree today and would drift the first time a provider was renamed —
+and the drift would be a screen with no amber bar over fabricated numbers. An id that
+matches no predictor is reported by `/meta` and refuses to start a run, because a typo
+that silently disables a predictor produces a run that looks complete and is missing a
+column.
 
 ### Aggregation exposes disagreement
 
 Per-model scores are shown alongside the consensus. When models disagree that is the most
 useful signal on the screen — it is surfaced, not averaged away.
+
+Concretely, in `domain/aggregate`:
+
+- **Scores are never averaged.** A ΔΔG in kcal/mol and a log-likelihood ratio are not on
+  the same scale. Each predictor's values are converted to ranks within its own series
+  first, and only ranks are combined. Averaging the raw values would produce a number
+  with no meaning that nevertheless sorts, which is the worst available failure.
+- **Disagreement is the spread between those normalised ranks**, reported beside the
+  consensus and never folded into it. There is no threshold separating "agreement" from
+  "disagreement" — the number is shown and the reader judges it.
+- **One opinion is not unanimity.** A variant scored by a single predictor gets a null
+  disagreement, not zero, and carries the count of predictors that scored it.
+
+### Aggregation, filtering and ranking are derived, not stored
+
+They are deterministic arithmetic over scores that are already persisted, so a stored
+copy could only ever be a second answer capable of disagreeing with the first. The
+consensus is also not a model output and could not be written as a `Score` without
+inventing a `ModelVersion` for the arithmetic.
+
+The one exception is the **constraint filter**, which is written to an append-only
+`ProvenanceEvent` at run time: constraints change, and a run is a record of what
+happened. Recomputing the filter from today's constraints would silently rewrite what a
+run did last week.
 
 ### Honesty boundary — non-negotiable
 
@@ -155,6 +215,32 @@ Redis + RQ. Jobs are **idempotent**. Results are content-addressed and cached on
 what that parameter affects, and the run diff in the run view is exact rather than
 inferred.
 
+- `catalyst/queue.py` holds the client, beside `db.py` rather than inside `workers/`.
+  Both the API (which enqueues) and the worker (which consumes) need it, and a route
+  importing an entry point is the one direction §3 does not allow. The job is referenced
+  by dotted path, so the API process never imports the worker module and cannot acquire
+  the ability to execute a run inside a request handler.
+- **The service does not know about the queue.** `runs.create` takes a `dispatch`
+  callable; routes pass `queue.enqueue_run`, tests pass a recording fake. A dispatch that
+  fails marks the run failed with the reason, rather than leaving it queued forever
+  looking like it is about to start.
+- **Content addressing is pinned** in `domain/hashing`: sorted keys, no whitespace, no
+  ASCII escaping, floats as `repr`, non-finite numbers refused. A cache key that varies
+  with dictionary order misses every time; one that collides serves one model's numbers
+  as another's.
+- **Cache reuse is visible.** A scoring stage whose input hash matches an earlier
+  succeeded stage copies that run's scores into this run — new rows, this run's id, the
+  same model version — and says so in its log. `RunStage.input_hash` is what the run diff
+  reads to decide whether a stage re-executed.
+- **Idempotency** is enforced twice: `execute` returns immediately unless the run is
+  still `pending`, and score inserts are `ON CONFLICT DO NOTHING` against `uq_score`, so
+  a worker killed mid-stage can be replayed without producing a second set of numbers for
+  the same cell.
+- **Cancellation** sets the run's status and appends a `ProvenanceEvent`; the executor
+  re-reads the run between stages and stops there. A stage already executing is allowed
+  to finish and record what it did — it happened, and a provenance trail that omits it is
+  a lie of omission.
+
 ---
 
 ## 7. State in `apps/web`
@@ -163,7 +249,7 @@ inferred.
 | ------------------------------------------------- | ------------------------------------------ |
 | Initial page data (projects, targets, schemes)    | **Server components**, fetched per request |
 | Mutations (create, attach, reconcile, confirm)    | **Server actions** in `app/actions.ts`     |
-| Live/polled state (run progress, workbench table) | **TanStack Query** — arrives in Phase 4    |
+| Live/polled state (run progress, workbench table) | **TanStack Query** — arrived in Phase 4    |
 | Workbench UI state (selection, filters, panels)   | **Zustand** — arrives in Phase 5           |
 | URL-addressable state (project, run, variant)     | **The route** — deep links must work       |
 
@@ -173,8 +259,15 @@ state that references server data by id.
 **Why the split.** Phases 2 and 3 have no polling and no optimistic updates, so a
 client-side cache would be a second copy of state with nothing to justify it — server
 components fetch, server actions mutate, `revalidatePath` refreshes. TanStack Query
-enters in Phase 4, where run progress genuinely streams and a cache earns its place.
-Adding it earlier would mean a provider wrapping the tree that nothing reads.
+entered in Phase 4, where run progress genuinely streams and a cache earns its place.
+Adding it earlier would have meant a provider wrapping the tree that nothing reads.
+
+The run view server-renders the run and then polls the same endpoint, so a reloaded page
+and a polled one cannot disagree. **Polling stops when the API says the run is terminal**
+— `Run.is_terminal` is computed server-side rather than the client keeping its own list
+of which statuses are final. `QueryClient` is created inside component state, never at
+module scope, because a module-level client is shared between requests on the server and
+would leak one user's data into another's render.
 
 Server actions return `{ok, message, remedy}` rather than throwing, so an API failure
 reaches the screen with its remedy intact instead of collapsing into an error boundary.
@@ -218,6 +311,26 @@ so numbering is modelled explicitly rather than assumed:
 
 No layer is permitted to convert between schemes implicitly. Conversion is an explicit,
 audited operation in `services/`.
+
+### Sequence index and canonical label are different things
+
+They are kept apart deliberately, because conflating them *is* the off-by-one:
+
+- **`Variant.code` is written in the canonical scheme.** `services/runs` reads the
+  confirmed scheme's labels and hands them to `domain/variants`, which composes the code
+  from the label. On the seeded lipase, sequence index 108 is `S77A` — a variant named
+  `S108A` would point a bench scientist 31 residues away from the residue it means.
+- **`Variant.position` is the 1-based sequence index**, and is what constraints,
+  structures and features join on. It is exposed to the interface as
+  `sequence_position` and is never displayed as a residue number.
+- **A position the canonical scheme cannot name produces no candidate at all.** Three
+  cases: the scheme does not cover it, the residue is not one of the standard twenty, or
+  the label cannot be written as a mutation code — which is what happens to a signal
+  peptide under mature-protein numbering, where labels run zero and below. Each is
+  counted and stated in the scoring stage's log rather than approximated.
+
+Writability is decided by `domain/mutation.parse_mutation`, so there is one definition of
+what a mutation code is rather than a second rule invented at the enumeration site.
 
 ---
 

@@ -1,11 +1,17 @@
 'use client'
 
 import type { Goal, GoalSpec, Objective } from '@catalyst/schema'
-import { Check, Lock, Pencil } from 'lucide-react'
+import { Check, Lock, Pencil, Play } from 'lucide-react'
+import type { Route } from 'next'
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 
-import { confirmGoalAction, createGoalAction, updateGoalAction } from '@/app/actions'
+import {
+  confirmGoalAction,
+  createGoalAction,
+  startRunAction,
+  updateGoalAction,
+} from '@/app/actions'
 import { InlineError } from '@/components/inline-error'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -30,10 +36,14 @@ export function GoalComposer({
   targetId,
   goal,
   disabled,
+  supportedObjectives,
 }: {
   targetId: string
   goal: Goal | null
   disabled: boolean
+  /** Objectives at least one configured provider covers. The rest are greyed
+      out rather than run, per specification §6. */
+  supportedObjectives: string[]
 }) {
   const router = useRouter()
   const toast = useToast()
@@ -84,20 +94,46 @@ export function GoalComposer({
         </Button>
       </form>
 
-      {goal ? <ParsedObjective goal={goal} /> : null}
+      {goal ? (
+        <ParsedObjective
+          goal={goal}
+          targetId={targetId}
+          supportedObjectives={supportedObjectives}
+        />
+      ) : null}
     </div>
   )
 }
 
 /* ----------------------------------------------------------------- chips */
 
-function ParsedObjective({ goal }: { goal: Goal }) {
+function ParsedObjective({
+  goal,
+  targetId,
+  supportedObjectives,
+}: {
+  goal: Goal
+  targetId: string
+  supportedObjectives: string[]
+}) {
   const router = useRouter()
   const toast = useToast()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<Failure>(null)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<GoalSpec>(goal.spec)
+
+  // Greyed out from what the providers declare, never from a model named here.
+  const objectiveOptions = OBJECTIVES.map((option) =>
+    supportedObjectives.includes(option.value)
+      ? option
+      : {
+          ...option,
+          disabled: true,
+          disabledReason:
+            'No configured predictor covers this objective. Running it would return numbers about something you did not ask for.',
+        },
+  )
 
   function save() {
     setError(null)
@@ -128,6 +164,22 @@ function ParsedObjective({ goal }: { goal: Goal }) {
       }
       toast({ title: 'Objective confirmed' })
       router.refresh()
+    })
+  }
+
+  function startRun() {
+    setError(null)
+    startTransition(async () => {
+      const result = await startRunAction(goal.id, targetId)
+      if (!result.ok) {
+        // Including the API's refusal when the objective is not confirmed. The
+        // button is disabled for the same reason, but the server is what decides.
+        setError({ message: result.message, remedy: result.remedy })
+        return
+      }
+      // The button named its effect; the toast keeps that name.
+      toast({ title: 'Design run started', description: 'Stages appear as they run.' })
+      router.push(`/runs/${result.data.id}` as Route)
     })
   }
 
@@ -174,7 +226,7 @@ function ParsedObjective({ goal }: { goal: Goal }) {
                 // explicit undefined is not the same as an absent prop.
                 {...(draft.objective ? { value: draft.objective } : {})}
                 onValueChange={(value) => setDraft({ ...draft, objective: value as Objective })}
-                options={OBJECTIVES}
+                options={objectiveOptions}
                 placeholder="Not stated"
                 className="w-full"
               />
@@ -335,16 +387,21 @@ function ParsedObjective({ goal }: { goal: Goal }) {
             {goal.is_confirmed ? 'Confirmed' : 'Confirm objective'}
           </Button>
 
-          {/* The run button is disabled for the same reason the API would
-              refuse, not for a reason invented on the client. */}
-          <Button disabled title={runBlockedReason(goal) ?? undefined}>
-            <Lock strokeWidth={1.5} />
+          {/* Disabled for the same reason the API would refuse, not for a
+              reason invented on the client — and the API refuses regardless. */}
+          <Button
+            variant={goal.is_confirmed ? 'primary' : 'default'}
+            disabled={pending || editing || !goal.is_confirmed}
+            title={runBlockedReason(goal) ?? undefined}
+            onClick={startRun}
+          >
+            {goal.is_confirmed ? <Play strokeWidth={1.5} /> : <Lock strokeWidth={1.5} />}
             Start design run
           </Button>
 
           <span className="text-12 text-text-muted">
             {goal.is_confirmed
-              ? 'Design runs arrive in Phase 4.'
+              ? 'Scores every single substitution, then ranks what the constraints allow.'
               : 'No run can start from an unconfirmed objective.'}
           </span>
         </div>
@@ -358,7 +415,7 @@ function runBlockedReason(goal: Goal): string | null {
     return `This objective is incomplete: ${goal.missing_required.join(', ')} not set.`
   }
   if (!goal.is_confirmed) return 'This objective has not been confirmed.'
-  return 'The run pipeline arrives in Phase 4.'
+  return null
 }
 
 function Expectations({ goal }: { goal: Goal }) {

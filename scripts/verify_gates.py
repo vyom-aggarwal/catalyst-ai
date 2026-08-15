@@ -23,9 +23,21 @@ import time
 import urllib.error
 import urllib.request
 
+# The checks print residue arrows and degree signs, and a Windows console
+# defaults to cp1252, which cannot encode them — the script died on a *passing*
+# check. Nothing is dropped: unencodable characters degrade rather than raise.
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="replace")
+
 BASE = "http://localhost:8000"
+WEB = "http://localhost:3000"
 ACCESSION = "P37957"  # B. subtilis lipase A: a 31-residue signal peptide, so the
 # full-length and mature schemes genuinely disagree.
+
+#: A run scores the whole single-point space, so give it room, but not forever:
+#: a run that has not finished by now is stuck, and saying so is the point.
+RUN_TIMEOUT_SECONDS = 180
 
 failures = 0
 
@@ -43,6 +55,25 @@ def call(method: str, path: str, body: object | None = None) -> tuple[int, objec
             return response.status, json.loads(response.read() or "null")
     except urllib.error.HTTPError as error:
         return error.code, json.loads(error.read() or "null")
+
+
+def fetch_html(url: str) -> str:
+    """The rendered page, for the checks that are about what a screen says."""
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except OSError as error:
+        return f"<!-- unreachable: {error} -->"
+
+
+def await_run(run_id: str) -> dict:
+    """Poll a run until the API says it is terminal."""
+    started = time.time()
+    while True:
+        _, run = call("GET", f"/runs/{run_id}")
+        if run.get("is_terminal") or time.time() - started > RUN_TIMEOUT_SECONDS:
+            return run
+        time.sleep(1)
 
 
 def step(label: str, ok: bool, detail: str = "") -> None:
@@ -193,6 +224,184 @@ def main() -> int:
         "POST", f"/targets/{target_id}/constraints", {"kind": "catalytic", "positions": [99999]}
     )
     step("out-of-range positions refused", status == 400)
+
+    # ----------------------------------------------------------------- Phase 4
+
+    section("Phase 4: a run completes end to end")
+
+    # The objective was edited above, which cleared its confirmation. That makes
+    # this the gate's second caller, checked where it actually matters.
+    status, refused = call("POST", f"/goals/{goal['id']}/runs", {})
+    step("a run cannot start from an unconfirmed parse", status == 400,
+         refused["detail"]["message"])
+
+    call("POST", f"/goals/{goal['id']}/confirm")
+    status, run = call("POST", f"/goals/{goal['id']}/runs", {})
+    step("run started once confirmed", status == 201, f"status={run['status']}")
+
+    _, queue = call("GET", "/queue")
+    step("a worker is consuming the queue", queue["connected"] and queue["workers"] >= 1,
+         f"{queue['workers']} worker(s)")
+
+    run = await_run(run["id"])
+    step("run succeeded", run["status"] == "succeeded", run.get("error") or "")
+
+    names = [stage["name"] for stage in run["stages"]]
+    step("pipeline is the one the brief states",
+         names[0] == "retrieve structure" and names[1] == "build MSA"
+         and names[-3:] == ["aggregate", "filter by constraints", "rank"],
+         " -> ".join(names))
+
+    scoring = [stage for stage in run["stages"] if stage["model"]]
+    step("every scoring stage names its model, version and weights",
+         len(scoring) >= 2
+         and all(s["model"]["name"] and s["model"]["version"] and s["model"]["weights_hash"]
+                 for s in scoring))
+    step("every stage that ran reports a runtime",
+         all(s["runtime_ms"] is not None
+             for s in run["stages"] if s["status"] in ("succeeded", "skipped")))
+    step("streaming logs are recorded per stage",
+         all(s["logs"] for s in run["stages"] if s["status"] in ("succeeded", "skipped")))
+
+    section("Phase 4: demo banners are correct everywhere")
+    _, meta = call("GET", "/meta")
+    step("service reports demo mode", meta["demo_mode"] is True)
+    step("every active predictor declares itself synthetic",
+         len(meta["predictors"]) > 0 and all(p["is_mock"] for p in meta["predictors"]),
+         ", ".join(p["id"] for p in meta["predictors"]))
+    step("no provider id matched nothing", meta["unknown_providers"] == [])
+    step("an unnamed objective is supported by nobody",
+         "other" not in meta["supported_objectives"])
+    step("the run is flagged synthetic", run["is_demo"] is True)
+
+    _, ranking = call("GET", f"/runs/{run['id']}/ranking?limit=25")
+    step("the ranking is flagged synthetic", ranking["is_demo"] is True)
+    cells = [cell for row in ranking["rows"] for cell in row["cells"]]
+    step("every individual number is badged", len(cells) > 0 and all(c["is_mock"] for c in cells),
+         f"{len(cells)} numbers")
+    step("every number carries the model version that produced it",
+         all(c["model_version_id"] for c in cells))
+
+    page = fetch_html(f"{WEB}/runs/{run['id']}")
+    step("the run screen carries the persistent bar", "Demo data" in page)
+    step("the projects screen carries it too", "Demo data" in fetch_html(f"{WEB}/projects"))
+
+    section("Phase 4: results are traceable, numbered and honest")
+    step("every metric states its sign convention",
+         len(ranking["metrics"]) > 0 and all(m["sign_convention"] for m in ranking["metrics"]),
+         "; ".join(f"{m['id']}: {m['sign_convention']}" for m in ranking["metrics"]))
+    ddg = next((m for m in ranking["metrics"] if m["id"] == "ddg_kcal_per_mol"), None)
+    step("stability is reported destabilizing-positive in kcal/mol",
+         ddg is not None and ddg["unit"] == "kcal/mol"
+         and ddg["sign_convention"] == "destabilizing positive")
+    step("no stability value is a bare point estimate",
+         all(c["uncertainty"] is not None and c["ci_low"] is not None
+             for c in cells if c["metric"] == "ddg_kcal_per_mol"))
+    step("the ranking is labelled with the canonical scheme",
+         ranking["scheme_label"] == target["canonical_scheme_label"], ranking["scheme_label"])
+
+    # The whole numbering subsystem, seen from the far end: UniProt annotates the
+    # nucleophile at 108, mature numbering calls it 77, and the codes this run
+    # produced must be written in the scheme the user confirmed.
+    _, filtered = call("GET", f"/runs/{run['id']}/filtered")
+    removed = filtered["removed"]
+    step("constrained variants were removed with the reason kept",
+         len(removed) > 0 and all(reasons for reasons in removed.values()),
+         f"{len(removed)} removed")
+    step("removed variants name the constraint that removed them",
+         all("catalytic" in reasons for reasons in removed.values()))
+    step("mutation codes are written in the canonical scheme, not sequence index",
+         any(code.startswith("S77") for code in removed)
+         and not any(code.startswith("S108") for code in removed),
+         ", ".join(sorted(removed)[:3]))
+    step("no removed variant survived into the ranking",
+         not any(row["code"] in removed for row in ranking["rows"]))
+
+    step("the stated budget bounds the ranking",
+         ranking["budget"] == 96 and len(ranking["rows"]) <= 96)
+    step("the full ranking stays retrievable behind the budget",
+         ranking["total_ranked"] > len(ranking["rows"]),
+         f"{ranking['total_ranked']} ranked, {len(ranking['rows'])} shown")
+    step("disagreement is reported, not averaged away",
+         all("disagreement" in row for row in ranking["rows"])
+         and any(row["sources_scored"] > 1 for row in ranking["rows"]))
+
+    section("Phase 4: a predictor that cannot run says so")
+    # A second target from the same real sequence, with no structure attached.
+    # The stability predictor requires one, so it must skip with a reason rather
+    # than return something worthless.
+    status, bare = call(
+        "POST",
+        f"/projects/{project_id}/targets",
+        {"source": "sequence", "name": "Lipase A, no structure", "text": target["sequence"]},
+    )
+    step("a structureless target loads", status == 201)
+    scheme = bare["numbering_schemes"][0]
+    call("POST", f"/targets/{bare['id']}/numbering/confirm", {"scheme_id": scheme["id"]})
+    _, bare_goal = call(
+        "POST", f"/targets/{bare['id']}/goals", {"text": "improve thermostability"}
+    )
+    call("POST", f"/goals/{bare_goal['id']}/confirm")
+    _, bare_run = call("POST", f"/goals/{bare_goal['id']}/runs", {})
+    bare_run = await_run(bare_run["id"])
+    step("the run still completes", bare_run["status"] == "succeeded", bare_run.get("error") or "")
+
+    skipped = [s for s in bare_run["stages"] if s["status"] == "skipped" and s["model"]]
+    step("the predictor needing a structure was skipped", len(skipped) == 1,
+         skipped[0]["model"]["name"] if skipped else "")
+    step("the skip states what is missing and how to fix it",
+         bool(skipped) and "structure" in (skipped[0]["logs"] or "").lower()
+         and "attach" in (skipped[0]["logs"] or "").lower())
+
+    _, bare_ranking = call("GET", f"/runs/{bare_run['id']}/ranking?limit=5")
+    step("its column reads unavailable with a reason, not zero",
+         "ddg_kcal_per_mol" in bare_ranking["unavailable"]
+         and bool(bare_ranking["unavailable"]["ddg_kcal_per_mol"]))
+    step("no value was imputed for the predictor that did not run",
+         all(c["metric"] != "ddg_kcal_per_mol"
+             for row in bare_ranking["rows"] for c in row["cells"]))
+    step("one opinion reports no disagreement rather than zero",
+         all(row["disagreement"] is None for row in bare_ranking["rows"]))
+
+    section("Phase 4: re-run with one parameter changed, and diff it")
+    status, child = call("POST", f"/runs/{run['id']}/rerun", {"max_variants": 24})
+    step("re-run started", status == 201)
+    child = await_run(child["id"])
+    step("re-run succeeded", child["status"] == "succeeded")
+
+    _, diff = call("GET", f"/runs/{child['id']}/diff")
+    step("exactly one parameter differs", len(diff["config_changes"]) == 1
+         and diff["config_changes"][0]["key"] == "max_variants",
+         str(diff["config_changes"]))
+    reused = [s["name"] for s in diff["stages"] if s["reused"]]
+    step("scoring did not re-execute for unchanged inputs",
+         all(s["reused"] for s in diff["stages"] if s["name"].startswith("score with")),
+         ", ".join(reused))
+    step("no score changed", diff["scores"]["changed"] == 0 and diff["scores"]["unchanged"] > 0,
+         f"{diff['scores']['unchanged']} unchanged")
+    step("the ranking narrowed to the new budget",
+         len(diff["left"]) > 0 and len(diff["entered"]) == 0)
+
+    status, _ = call("POST", f"/runs/{run['id']}/rerun", {})
+    step("a re-run that changes nothing is refused", status == 400)
+    status, _ = call("GET", f"/runs/{run['id']}/diff")
+    step("a run with no predecessor has nothing to diff", status == 400)
+
+    section("Phase 4: cancelling")
+    _, third = call("POST", f"/goals/{goal['id']}/runs", {"max_variants": 5})
+    status, cancelled = call("POST", f"/runs/{third['id']}/cancel")
+    # Either it was still in flight and is now cancelled, or it had already
+    # finished and the API refused. What must never happen is a silent no-op.
+    if status == 200:
+        step("cancelling a live run stops it", cancelled["status"] == "cancelled")
+        step("no stage is left waiting after a cancel",
+             all(s["status"] != "pending" for s in cancelled["stages"]))
+    else:
+        step("cancelling a finished run is refused, not ignored", status == 400,
+             cancelled["detail"]["message"])
+    _, done = call("GET", f"/runs/{third['id']}")
+    status, _ = call("POST", f"/runs/{done['id']}/cancel")
+    step("a terminal run cannot be cancelled twice", status == 400)
 
     print()
     if failures:

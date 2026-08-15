@@ -1,25 +1,34 @@
 import {
   constraintListSchema,
   constraintSchema,
+  filteredSchema,
   goalListSchema,
   goalSchema,
   metaSchema,
   preflightSchema,
   projectDetailSchema,
   projectListSchema,
+  rankingSchema,
   reconciliationSchema,
+  runDiffSchema,
+  runListSchema,
+  runSchema,
   sequenceTrackSchema,
   suggestionListSchema,
   targetSchema,
   type Constraint,
   type ConstraintKind,
+  type Filtered,
   type Goal,
   type GoalSpec,
   type Meta,
   type Preflight,
   type ProjectDetail,
   type ProjectRow,
+  type Ranking,
   type Reconciliation,
+  type Run,
+  type RunDiff,
   type SequenceTrack,
   type Suggestion,
   type Target,
@@ -241,6 +250,52 @@ export function addConstraint(
 ): Promise<Constraint> {
   return send(`/targets/${targetId}/constraints`, body, constraintSchema)
 }
+
+/* ------------------------------------------------------------------- runs */
+
+/** Start a design run. The API refuses unless the objective is confirmed. */
+export function startRun(
+  goalId: string,
+  body: { predictors?: string[]; max_variants?: number; override_constraints?: boolean } = {},
+): Promise<Run> {
+  return send(`/goals/${goalId}/runs`, body, runSchema)
+}
+
+export function fetchRun(runId: string): Promise<Run> {
+  return request(`/runs/${runId}`, runSchema)
+}
+
+export function fetchRuns(targetId: string): Promise<Run[]> {
+  return request(`/targets/${targetId}/runs`, runListSchema)
+}
+
+export function cancelRun(runId: string): Promise<Run> {
+  return send(`/runs/${runId}/cancel`, {}, runSchema)
+}
+
+/** Re-run with one parameter changed. The child records its parent, for the diff. */
+export function rerun(
+  runId: string,
+  body: { predictors?: string[]; max_variants?: number; override_constraints?: boolean },
+): Promise<Run> {
+  return send(`/runs/${runId}/rerun`, body, runSchema)
+}
+
+export function fetchRanking(runId: string, limit?: number): Promise<Ranking> {
+  const query = limit === undefined ? '' : `?limit=${limit}`
+  return request(`/runs/${runId}/ranking${query}`, rankingSchema)
+}
+
+/** Variants a constraint removed, each with the constraint that removed it. */
+export function fetchFiltered(runId: string): Promise<Filtered> {
+  return request(`/runs/${runId}/filtered`, filteredSchema)
+}
+
+export function fetchDiff(runId: string): Promise<RunDiff> {
+  return request(`/runs/${runId}/diff`, runDiffSchema)
+}
+
+/* ------------------------------------------------------------ constraints */
 
 export async function deleteConstraint(constraintId: string): Promise<void> {
   let response: Response

@@ -119,6 +119,41 @@ export async function removeConstraintAction(
   return { ok: true, data: null }
 }
 
+/**
+ * Start a design run. The API applies the confirmation gate; this action does
+ * not repeat it, because a check duplicated on the client is a check that can
+ * disagree with the one that matters.
+ */
+export async function startRunAction(
+  goalId: string,
+  targetId: string,
+  input: { max_variants?: number; override_constraints?: boolean } = {},
+): Promise<ActionResult<{ id: string }>> {
+  const result = await attempt(() => api.startRun(goalId, input))
+  if (!result.ok) return result
+  revalidatePath(`/targets/${targetId}`)
+  revalidatePath(`/targets/${targetId}/goal`)
+  return { ok: true, data: { id: result.data.id } }
+}
+
+export async function cancelRunAction(runId: string): Promise<ActionResult<{ status: string }>> {
+  const result = await attempt(() => api.cancelRun(runId))
+  if (!result.ok) return result
+  revalidatePath(`/runs/${runId}`)
+  return { ok: true, data: { status: result.data.status } }
+}
+
+/** Re-run with one parameter changed, linked to this run so the diff is exact. */
+export async function rerunAction(
+  runId: string,
+  input: { max_variants?: number; override_constraints?: boolean },
+): Promise<ActionResult<{ id: string }>> {
+  const result = await attempt(() => api.rerun(runId, input))
+  if (!result.ok) return result
+  revalidatePath(`/runs/${runId}`)
+  return { ok: true, data: { id: result.data.id } }
+}
+
 export async function confirmCanonicalAction(
   targetId: string,
   schemeId: string,

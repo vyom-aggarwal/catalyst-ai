@@ -1,10 +1,21 @@
 # `docker compose up` should bring the whole stack up with seed data on a clean
 # machine, first try. The api service runs migrations and seeds before serving.
-#
-# The RQ worker is deliberately absent: job execution lands in Phase 4, and a
-# container that does nothing is worse than no container.
 
 name: catalyst-ai
+
+# The api and the worker are the same image with the same configuration and two
+# different commands. Shared here rather than copied, because a worker whose
+# provider set has drifted from the API's would write numbers the API describes
+# incorrectly — and the drift would be invisible.
+x-api-environment: &api-environment
+  DATABASE_URL: postgresql+psycopg://catalyst:catalyst@postgres:5432/catalyst
+  REDIS_URL: redis://redis:6379/0
+  CORS_ORIGINS: http://localhost:3000
+  CATALYST_PROVIDERS: mock
+  # Read from .env in this directory, which git ignores. Empty is fine and
+  # selects the deterministic fallback parser.
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  CATALYST_PARSER_MODEL: ${CATALYST_PARSER_MODEL:-claude-opus-5}
 
 services:
   postgres:
@@ -40,15 +51,7 @@ services:
   api:
     build:
       context: ./apps/api
-    environment:
-      DATABASE_URL: postgresql+psycopg://catalyst:catalyst@postgres:5432/catalyst
-      REDIS_URL: redis://redis:6379/0
-      CORS_ORIGINS: http://localhost:3000
-      CATALYST_PROVIDERS: mock
-      # Read from .env in this directory, which git ignores. Empty is fine and
-      # selects the deterministic fallback parser.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      CATALYST_PARSER_MODEL: ${CATALYST_PARSER_MODEL:-claude-opus-5}
+    environment: *api-environment
     ports:
       - '8000:8000'
     depends_on:
@@ -62,6 +65,26 @@ services:
       sh -c "alembic upgrade head
       && python -m catalyst.seed
       && uvicorn catalyst.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  # Design runs execute here, never in a request handler. The API enqueues and
+  # returns; without this container a run stays queued forever, which /queue
+  # reports so the run view can say so rather than spin.
+  worker:
+    build:
+      context: ./apps/api
+    environment: *api-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Migrations run in the api service, so the worker waits for it rather
+      # than racing it to a schema that does not exist yet.
+      api:
+        condition: service_started
+    volumes:
+      - ./apps/api:/app
+    command: python -m catalyst.workers.worker
 
   web:
     build:

@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono } from 'next/font/google'
 import type { ReactNode } from 'react'
 
 import { AppFrame } from '@/components/app-frame'
+import { QueryProvider } from '@/components/query-provider'
 import { ToastProvider } from '@/components/ui/toast'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { fetchMeta } from '@/lib/api'
@@ -37,11 +38,13 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   return (
     <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable}`}>
       <body>
-        <TooltipProvider delayDuration={300}>
-          <ToastProvider>
-            <AppFrame demoMode={demoMode}>{children}</AppFrame>
-          </ToastProvider>
-        </TooltipProvider>
+        <QueryProvider>
+          <TooltipProvider delayDuration={300}>
+            <ToastProvider>
+              <AppFrame demoMode={demoMode}>{children}</AppFrame>
+            </ToastProvider>
+          </TooltipProvider>
+        </QueryProvider>
       </body>
     </html>
   )

@@ -3,9 +3,10 @@ import { ChevronLeft } from 'lucide-react'
 import Link from 'next/link'
 
 import { ErrorState } from '@/app/projects/error-state'
+import { RunsTable } from '@/components/run/runs-table'
 import { SequenceTrack, type TrackScheme } from '@/components/sequence-track'
 import { Badge } from '@/components/ui/badge'
-import { ApiError, fetchTarget, fetchTrack } from '@/lib/api'
+import { ApiError, fetchRuns, fetchTarget, fetchTrack } from '@/lib/api'
 
 import { NumberingPanel } from './numbering-panel'
 
@@ -16,8 +17,9 @@ export default async function TargetPage({ params }: { params: Promise<{ id: str
 
   let target
   let track
+  let runs
   try {
-    ;[target, track] = await Promise.all([fetchTarget(id), fetchTrack(id)])
+    ;[target, track, runs] = await Promise.all([fetchTarget(id), fetchTrack(id), fetchRuns(id)])
   } catch (error) {
     if (error instanceof ApiError) {
       return <ErrorState message={error.message} remedy={error.remedy} />
@@ -108,6 +110,11 @@ export default async function TargetPage({ params }: { params: Promise<{ id: str
           hasAccession={Boolean(target.uniprot_accession)}
           isDesignable={target.is_designable}
         />
+      </section>
+
+      <section className="border-border border-t p-6">
+        <h2 className="text-15 font-strong mb-2">Design runs</h2>
+        <RunsTable runs={runs} />
       </section>
 
       <section className="border-border border-t p-6">

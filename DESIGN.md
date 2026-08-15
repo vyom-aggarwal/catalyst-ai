@@ -187,6 +187,25 @@ Nothing else in the product animates — no page transitions, no stagger, no spr
 `prefers-reduced-motion: reduce` cuts every duration to `0ms`. This is implemented once,
 globally, in `tokens.css`; individual components do not re-check it.
 
+### 1.10 The synthetic mark
+
+The specification requires a fabricating provider to badge **every individual number** it
+produced, not only the screen. A full badge on every cell would make a dense table
+unreadable, so the mark is a single `--warn` asterisk immediately after the value,
+carrying its explanation as a tooltip, with the footnote spelled out once beneath the
+table:
+
+> `*` Synthetic value from a provider that fabricates numbers. Not model output, and not
+> a prediction.
+
+It is the only typographic mark in the product that carries meaning on its own, and it is
+reserved for this. Whether to draw it comes from `is_mock` on the model version that
+produced the number — never from recognising a model by name.
+
+The persistent amber bar stays as it is: not dismissible, on every screen, whenever any
+active provider fabricates. The mark is per-number; the bar is per-screen; both are
+required and neither substitutes for the other.
+
 ---
 
 ## 2. Layout

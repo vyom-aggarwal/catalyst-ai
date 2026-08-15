@@ -80,6 +80,17 @@ def label_at(scheme: NumberingScheme, position: int) -> str | None:
     return labels[position - 1]
 
 
+def labels_of(scheme: NumberingScheme) -> list[str | None]:
+    """Every label in this scheme, by sequence index.
+
+    Public because writing a mutation code is an explicit conversion out of
+    sequence index and into the canonical scheme — ARCHITECTURE.md §9 — and a
+    caller doing it one position at a time through `label_at` would rebuild the
+    list on every residue.
+    """
+    return _labels(scheme)
+
+
 # --------------------------------------------------------------------------- #
 # Projects
 # --------------------------------------------------------------------------- #
