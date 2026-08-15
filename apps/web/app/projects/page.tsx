@@ -1,4 +1,8 @@
+import type { Route } from 'next'
 import type { ProjectRow } from '@catalyst/schema'
+import Link from 'next/link'
+
+import { NewProjectDialog } from './new-project-dialog'
 
 import {
   EmptyCell,
@@ -41,9 +45,12 @@ export default async function ProjectsPage() {
     <div className="flex min-h-full flex-col">
       <header className="border-border flex h-12 shrink-0 items-center justify-between border-b px-6">
         <h1 className="text-18 font-strong">Projects</h1>
-        <span className="text-12 text-text-muted tabular-nums">
-          {projects.length} {projects.length === 1 ? 'project' : 'projects'}
-        </span>
+        <div className="flex items-center gap-4">
+          <span className="text-12 text-text-muted tabular-nums">
+            {projects.length} {projects.length === 1 ? 'project' : 'projects'}
+          </span>
+          <NewProjectDialog />
+        </div>
       </header>
 
       {projects.length === 0 ? <EmptyState /> : <ProjectsTable projects={projects} />}
@@ -68,7 +75,14 @@ function ProjectsTable({ projects }: { projects: ProjectRow[] }) {
       <TableBody>
         {projects.map((project) => (
           <TableRow key={project.id}>
-            <TableCell className="font-medium">{project.name}</TableCell>
+            <TableCell className="font-medium">
+              <Link
+                href={`/projects/${project.id}` as Route}
+                className="hover:text-accent underline-offset-2 hover:underline"
+              >
+                {project.name}
+              </Link>
+            </TableCell>
             <TableCell>
               {project.target_name ?? (
                 <EmptyCell reason="No target loaded yet. Add one in target setup." />
@@ -98,15 +112,14 @@ function ProjectsTable({ projects }: { projects: ProjectRow[] }) {
 function EmptyState() {
   return (
     <div className="flex flex-1 items-center justify-center p-6">
-      <div className="max-w-md space-y-2 text-center">
+      <div className="max-w-md space-y-3 text-center">
         <p className="text-13 text-text">No projects yet.</p>
         <p className="text-12 text-text-muted">
-          Seed the two starter projects by running{' '}
-          <code className="rounded-control bg-surface-sunk text-12 px-1 py-0.5 font-mono">
-            docker compose exec api python -m catalyst.seed
-          </code>
-          .
+          A project holds one target and the design runs made against it.
         </p>
+        <div className="flex justify-center">
+          <NewProjectDialog />
+        </div>
       </div>
     </div>
   )

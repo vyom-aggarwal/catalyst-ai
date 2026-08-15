@@ -139,13 +139,14 @@ axis, or metric readout. Use Tailwind's `tabular-nums`.
 
 4px grid, which is Tailwind's default `--spacing`, so `p-4` is 16px.
 
-| Token                   | Value   | Use                       |
-| ----------------------- | ------- | ------------------------- |
-| `--spacing-row`         | `30px`  | table row                 |
-| `--spacing-row-compact` | `26px`  | table row, compact toggle |
-| `--spacing-control`     | `30px`  | form control height       |
-| `--spacing-rail`        | `240px` | left rail (collapsible)   |
-| `--spacing-inspector`   | `380px` | right inspector           |
+| Token                   | Value   | Use                                        |
+| ----------------------- | ------- | ------------------------------------------ |
+| `--spacing-row`         | `30px`  | table row                                  |
+| `--spacing-row-compact` | `26px`  | table row, compact toggle                  |
+| `--spacing-control`     | `30px`  | form control height                        |
+| `--spacing-rail`        | `240px` | left rail (collapsible)                    |
+| `--spacing-inspector`   | `380px` | right inspector                            |
+| `--spacing-track-min`   | `640px` | minimum legible width for a sequence track |
 
 Panel padding 16px. Section gaps 24px.
 

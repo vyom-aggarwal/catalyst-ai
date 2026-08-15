@@ -122,6 +122,9 @@
   --spacing-control-sm: 26px;
   --spacing-rail: 240px;
   --spacing-inspector: 380px;
+  /* Narrowest a linear sequence track stays legible at; below this it scrolls
+     horizontally rather than compressing residues into illegibility. */
+  --spacing-track-min: 640px;
 }
 
 @theme {

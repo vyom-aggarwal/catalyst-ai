@@ -154,17 +154,29 @@ inferred.
 
 ## 7. State in `apps/web`
 
-| Kind                                            | Owner                                |
-| ----------------------------------------------- | ------------------------------------ |
-| Server state (projects, runs, variants, scores) | **TanStack Query**                   |
-| Workbench UI state (selection, filters, panels) | **Zustand**                          |
-| URL-addressable state (project, run, variant)   | **The route** — deep links must work |
+| Kind                                              | Owner                                      |
+| ------------------------------------------------- | ------------------------------------------ |
+| Initial page data (projects, targets, schemes)    | **Server components**, fetched per request |
+| Mutations (create, attach, reconcile, confirm)    | **Server actions** in `app/actions.ts`     |
+| Live/polled state (run progress, workbench table) | **TanStack Query** — arrives in Phase 4    |
+| Workbench UI state (selection, filters, panels)   | **Zustand** — arrives in Phase 5           |
+| URL-addressable state (project, run, variant)     | **The route** — deep links must work       |
 
 No Redux. Server data is never copied into Zustand; the store holds selection and view
 state that references server data by id.
 
-Tables are TanStack Table + TanStack Virtual. The bar is **10,000 rows at 60fps**, which
-means row components are memoised and cell renderers stay pure.
+**Why the split.** Phases 2 and 3 have no polling and no optimistic updates, so a
+client-side cache would be a second copy of state with nothing to justify it — server
+components fetch, server actions mutate, `revalidatePath` refreshes. TanStack Query
+enters in Phase 4, where run progress genuinely streams and a cache earns its place.
+Adding it earlier would mean a provider wrapping the tree that nothing reads.
+
+Server actions return `{ok, message, remedy}` rather than throwing, so an API failure
+reaches the screen with its remedy intact instead of collapsing into an error boundary.
+
+Tables are TanStack Table + TanStack Virtual from Phase 5. The bar is **10,000 rows at
+60fps**, which means row components are memoised and cell renderers stay pure. The
+small tables before then are the plain `components/ui/table` primitives.
 
 ---
 
@@ -206,7 +218,7 @@ audited operation in `services/`.
 
 1. **Exact correspondence first.** The chain is split into runs of consecutive author
    numbering; every run must be placeable at one shared offset. The offset relates
-   author numbering to sequence index — *not* position within the resolved residues,
+   author numbering to sequence index — _not_ position within the resolved residues,
    because author numbering stays continuous across an unresolved loop while the
    resolved list does not. Indexing the resolved list would slide every residue after
    a gap by the length of that gap.
