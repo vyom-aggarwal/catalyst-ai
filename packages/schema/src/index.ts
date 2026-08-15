@@ -149,3 +149,113 @@ export const sequenceTrackSchema = z.object({
 
 export type SequenceTrack = z.infer<typeof sequenceTrackSchema>
 export type TrackResidue = z.infer<typeof trackResidueSchema>
+
+/* ------------------------------------------------------------------ goals */
+
+export const objectiveSchema = z.enum([
+  'thermostability',
+  'activity',
+  'expression',
+  'solubility',
+  'binding_affinity',
+  'specificity',
+  'solvent_tolerance',
+  'other',
+])
+
+export type Objective = z.infer<typeof objectiveSchema>
+
+/**
+ * Every field is nullable. An absent field means the user did not state it —
+ * never a default. The UI must render "not stated" rather than filling a gap.
+ */
+export const goalSpecSchema = z.object({
+  objective: objectiveSchema.nullable(),
+  objective_detail: z.string().nullable(),
+  target_value: z.object({ value: z.number(), unit: z.string() }).nullable(),
+  preserve: z.array(z.string()),
+  budget: z.object({
+    variants: z.number().int().nullable(),
+    amount: z.number().nullable(),
+    currency: z.string().nullable(),
+  }),
+  expression_host: z.string().nullable(),
+  assay: z.string().nullable(),
+  /** Clauses the parser could not place, shown rather than dropped. */
+  unparsed: z.array(z.string()),
+  method: z.string().optional(),
+  note: z.string().optional(),
+  restatement: z.string().optional(),
+  matched_phrases: z.array(z.string()).optional(),
+})
+
+export type GoalSpec = z.infer<typeof goalSpecSchema>
+
+export const goalSchema = z.object({
+  id: z.string().uuid(),
+  project_id: z.string().uuid(),
+  target_id: z.string().uuid(),
+  raw_text: z.string(),
+  spec: goalSpecSchema,
+  restatement: z.string(),
+  method: z.string(),
+  note: z.string(),
+  missing_required: z.array(z.string()),
+  is_confirmed: z.boolean(),
+  confirmed_at: z.string().datetime({ offset: true }).nullable(),
+  expectations: z.object({
+    will: z.array(z.string()),
+    will_not: z.array(z.string()),
+  }),
+})
+
+export type Goal = z.infer<typeof goalSchema>
+export const goalListSchema = z.array(goalSchema)
+
+export const preflightSchema = z.object({
+  can_start: z.boolean(),
+  reason: z.string().nullable(),
+  remedy: z.string().nullable(),
+})
+
+export type Preflight = z.infer<typeof preflightSchema>
+
+/* ------------------------------------------------------------ constraints */
+
+export const constraintKindSchema = z.enum([
+  'catalytic',
+  'ligand_contact',
+  'cofactor_contact',
+  'binding_interface',
+  'disulfide',
+  'signal_peptide',
+  'purification_tag',
+  'do_not_touch',
+])
+
+export type ConstraintKind = z.infer<typeof constraintKindSchema>
+
+export const constraintSchema = z.object({
+  id: z.string().uuid(),
+  kind: constraintKindSchema,
+  positions: z.array(z.number().int()),
+  /** The same positions as the canonical scheme labels them. */
+  labels: z.array(z.string()),
+  note: z.string().nullable(),
+})
+
+export type Constraint = z.infer<typeof constraintSchema>
+export const constraintListSchema = z.array(constraintSchema)
+
+/** A proposal read from UniProt. Constrains nothing until accepted. */
+export const suggestionSchema = z.object({
+  kind: constraintKindSchema,
+  positions: z.array(z.number().int()),
+  labels: z.array(z.string()),
+  residues: z.array(z.string()),
+  source: z.string(),
+  note: z.string(),
+})
+
+export type Suggestion = z.infer<typeof suggestionSchema>
+export const suggestionListSchema = z.array(suggestionSchema)

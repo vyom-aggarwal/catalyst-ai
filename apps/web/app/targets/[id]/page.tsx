@@ -61,6 +61,21 @@ export default async function TargetPage({ params }: { params: Promise<{ id: str
           {target.organism ? ' · ' : ''}
           <span className="tabular-nums">{target.length} residues</span>
         </p>
+
+        <nav className="mt-2 flex items-center gap-4" aria-label="Target">
+          <Link
+            href={`/targets/${target.id}/constraints` as Route}
+            className="text-12 text-accent underline-offset-2 hover:underline"
+          >
+            Constraints
+          </Link>
+          <Link
+            href={`/targets/${target.id}/goal` as Route}
+            className="text-12 text-accent underline-offset-2 hover:underline"
+          >
+            Goal
+          </Link>
+        </nav>
       </header>
 
       {!target.is_designable ? (

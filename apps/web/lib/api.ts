@@ -1,15 +1,27 @@
 import {
+  constraintListSchema,
+  constraintSchema,
+  goalListSchema,
+  goalSchema,
   metaSchema,
+  preflightSchema,
   projectDetailSchema,
   projectListSchema,
   reconciliationSchema,
   sequenceTrackSchema,
+  suggestionListSchema,
   targetSchema,
+  type Constraint,
+  type ConstraintKind,
+  type Goal,
+  type GoalSpec,
   type Meta,
+  type Preflight,
   type ProjectDetail,
   type ProjectRow,
   type Reconciliation,
   type SequenceTrack,
+  type Suggestion,
   type Target,
 } from '@catalyst/schema'
 
@@ -183,4 +195,67 @@ export function acceptReconciliation(
 
 export function confirmCanonical(targetId: string, schemeId: string): Promise<Target> {
   return send(`/targets/${targetId}/numbering/confirm`, { scheme_id: schemeId }, targetSchema)
+}
+
+/* ------------------------------------------------------------------ goals */
+
+export function fetchGoals(targetId: string): Promise<Goal[]> {
+  return request(`/targets/${targetId}/goals`, goalListSchema)
+}
+
+export function fetchGoal(goalId: string): Promise<Goal> {
+  return request(`/goals/${goalId}`, goalSchema)
+}
+
+export function createGoal(targetId: string, text: string): Promise<Goal> {
+  return send(`/targets/${targetId}/goals`, { text }, goalSchema)
+}
+
+/** Replace the parse with the user's edited chips. Clears any confirmation. */
+export function updateGoal(goalId: string, spec: GoalSpec): Promise<Goal> {
+  return send(`/goals/${goalId}`, { spec }, goalSchema)
+}
+
+export function confirmGoal(goalId: string): Promise<Goal> {
+  return send(`/goals/${goalId}/confirm`, {}, goalSchema)
+}
+
+/** Asks the API the same question the run pipeline will ask. */
+export function fetchPreflight(goalId: string): Promise<Preflight> {
+  return request(`/goals/${goalId}/preflight`, preflightSchema)
+}
+
+/* ------------------------------------------------------------ constraints */
+
+export function fetchConstraints(targetId: string): Promise<Constraint[]> {
+  return request(`/targets/${targetId}/constraints`, constraintListSchema)
+}
+
+export function fetchSuggestions(targetId: string): Promise<Suggestion[]> {
+  return request(`/targets/${targetId}/constraints/suggestions`, suggestionListSchema)
+}
+
+export function addConstraint(
+  targetId: string,
+  body: { kind: ConstraintKind; positions: number[]; note?: string },
+): Promise<Constraint> {
+  return send(`/targets/${targetId}/constraints`, body, constraintSchema)
+}
+
+export async function deleteConstraint(constraintId: string): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch(`${baseUrl()}/constraints/${constraintId}`, {
+      method: 'DELETE',
+      cache: 'no-store',
+    })
+  } catch {
+    throw new ApiError('Cannot reach the API.', 'Start the stack with `docker compose up`.')
+  }
+  if (!response.ok) {
+    throw new ApiError(
+      `The API returned ${response.status} removing that constraint.`,
+      'Reload the page and try again.',
+    )
+  }
 }

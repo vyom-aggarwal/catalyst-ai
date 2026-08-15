@@ -1,5 +1,6 @@
 'use server'
 
+import type { ConstraintKind, Goal, GoalSpec } from '@catalyst/schema'
 import { revalidatePath } from 'next/cache'
 
 import * as api from '@/lib/api'
@@ -70,6 +71,52 @@ export async function acceptReconciliationAction(
   const result = await attempt(() => api.acceptReconciliation(targetId, input))
   if (result.ok) revalidatePath(`/targets/${targetId}`)
   return result.ok ? { ok: true, data: null } : result
+}
+
+export async function createGoalAction(
+  targetId: string,
+  text: string,
+): Promise<ActionResult<{ id: string }>> {
+  const result = await attempt(() => api.createGoal(targetId, text))
+  if (!result.ok) return result
+  revalidatePath(`/targets/${targetId}/goal`)
+  return { ok: true, data: { id: result.data.id } }
+}
+
+/** Save edited chips. The API clears the confirmation; the UI must re-lock. */
+export async function updateGoalAction(
+  goalId: string,
+  spec: GoalSpec,
+): Promise<ActionResult<Goal>> {
+  const result = await attempt(() => api.updateGoal(goalId, spec))
+  if (result.ok) revalidatePath('/targets', 'layout')
+  return result
+}
+
+export async function confirmGoalAction(goalId: string): Promise<ActionResult<Goal>> {
+  const result = await attempt(() => api.confirmGoal(goalId))
+  if (result.ok) revalidatePath('/targets', 'layout')
+  return result
+}
+
+export async function addConstraintAction(
+  targetId: string,
+  input: { kind: ConstraintKind; positions: number[]; note?: string },
+): Promise<ActionResult<null>> {
+  const result = await attempt(() => api.addConstraint(targetId, input))
+  if (!result.ok) return result
+  revalidatePath(`/targets/${targetId}/constraints`)
+  return { ok: true, data: null }
+}
+
+export async function removeConstraintAction(
+  constraintId: string,
+  targetId: string,
+): Promise<ActionResult<null>> {
+  const result = await attempt(() => api.deleteConstraint(constraintId))
+  if (!result.ok) return result
+  revalidatePath(`/targets/${targetId}/constraints`)
+  return { ok: true, data: null }
 }
 
 export async function confirmCanonicalAction(
