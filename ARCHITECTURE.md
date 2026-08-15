@@ -57,6 +57,11 @@ Dependencies point downward only. A module never imports from a layer above it.
      │           PDB and FASTA. No model runs here — these are downloads — which
      │           is why they sit beside providers/ rather than inside it.
      │
+  parsers/       Free-text goal → structured objective. A language model reads
+     │           the sentence; a deterministic rule parser runs whenever it
+     │           cannot. Not providers/: a parser produces no scientific number
+     │           and has no weights hash to cite. See §10.
+     │
   domain/        Pure logic with no I/O and no database: amino acid nomenclature,
      │           mutation codes, numbering reconciliation. Everything here is a
      │           function of its arguments, and is where the numbering rules in
@@ -213,6 +218,41 @@ so numbering is modelled explicitly rather than assumed:
 
 No layer is permitted to convert between schemes implicitly. Conversion is an explicit,
 audited operation in `services/`.
+
+---
+
+## 10. Goal parsing — the confirmation gate
+
+> **No run may start from a parse the user has not confirmed.**
+
+Enforced in `services/goals.require_confirmed`, not in the UI. A check that exists only
+on a screen is a check the API does not have, and Phase 4's worker is a second caller
+that would bypass it.
+
+- **The parser has no scientific authority.** It extracts what the sentence says and
+  never supplies what it does not. Every field is optional; an absent field means "not
+  stated", never a default. The JSON schema admits `null` for every field precisely so
+  that "not stated" is never harder to express than a guess.
+- **Two implementations, one interface.** Claude reads the sentence. A deterministic
+  rule parser runs when there is no API key, on any API failure, on malformed output,
+  and on a safety refusal — which returns HTTP 200 with `stop_reason: "refusal"`, so the
+  stop reason is checked before content is ever read. A rule-based parse is always
+  badged, because it matches phrases rather than reading sentences.
+- **Editing a chip clears the confirmation.** What the user agreed to was that
+  objective, not that database row.
+- **The restatement is built from the parsed fields, never from the input.** Echoing the
+  goal back would look correct no matter what the parser actually understood.
+- **Expectations are shown before the run**, including that a stability prediction does
+  not convert to a Tm shift and that stacked mutations are assumed additive.
+
+### Constraints
+
+Hard filters, so nothing is applied without acceptance. UniProt annotations are imported
+as _suggestions_ carrying their source, and every position is translated out of UniProt
+numbering into the target's canonical scheme first. On the seeded lipase, UniProt
+annotates the catalytic nucleophile at 108 and the confirmed mature-protein scheme calls
+it Ser77 — importing the raw number would misplace the most important residue on the
+protein by 31 positions.
 
 ### How reconciliation actually works
 

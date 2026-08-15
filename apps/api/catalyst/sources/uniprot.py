@@ -47,12 +47,29 @@ class SignalPeptide:
 
 
 @dataclass(frozen=True, slots=True)
+class AnnotatedFeature:
+    """A residue annotation from the UniProt record.
+
+    Positions are in the record's own full-length numbering. They are never
+    used directly as constraints — they are translated through the target's
+    canonical numbering scheme first, because that is exactly the 25-residue
+    error the numbering subsystem exists to prevent.
+    """
+
+    kind: str
+    start: int
+    end: int
+    description: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class UniProtRecord:
     accession: str
     name: str
     organism: str | None
     sequence: str
     signal_peptide: SignalPeptide | None
+    features: tuple[AnnotatedFeature, ...] = ()
 
     @property
     def length(self) -> int:
@@ -147,4 +164,36 @@ def fetch(accession: str, *, client: httpx.Client | None = None) -> UniProtRecor
         organism=str(organism) if organism else None,
         sequence=sequence.upper(),
         signal_peptide=_extract_signal(payload),
+        features=_extract_features(payload),
     )
+
+
+#: UniProt feature types that correspond to a design constraint. Everything
+#: else in the record — secondary structure, natural variants, sequence
+#: conflicts — describes the protein rather than restricting where it may be
+#: mutated, and is not imported.
+CONSTRAINT_FEATURES = frozenset(
+    {"Active site", "Binding site", "Site", "Disulfide bond", "Signal", "Metal binding"}
+)
+
+
+def _extract_features(payload: dict[str, Any]) -> tuple[AnnotatedFeature, ...]:
+    found: list[AnnotatedFeature] = []
+    for feature in payload.get("features", []):
+        kind = feature.get("type")
+        if kind not in CONSTRAINT_FEATURES:
+            continue
+        location = feature.get("location", {})
+        start = location.get("start", {}).get("value")
+        end = location.get("end", {}).get("value")
+        if not isinstance(start, int) or not isinstance(end, int):
+            continue
+        found.append(
+            AnnotatedFeature(
+                kind=str(kind),
+                start=start,
+                end=end,
+                description=feature.get("description") or None,
+            )
+        )
+    return tuple(found)

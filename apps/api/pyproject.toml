@@ -16,6 +16,10 @@ dependencies = [
     # structures from UniProt, RCSB and AlphaFold DB at runtime. It was already
     # present because FastAPI's TestClient is built on it.
     "httpx>=0.28.1",
+    # Goal parsing only. It turns free text into the structured objective the
+    # user confirms; it never produces a scientific number. The deterministic
+    # fallback in catalyst.parsers.rules runs whenever no key is configured.
+    "anthropic>=0.69.0",
 ]
 
 [project.optional-dependencies]

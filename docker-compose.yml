@@ -48,7 +48,7 @@ services:
       # Read from .env in this directory, which git ignores. Empty is fine and
       # selects the deterministic fallback parser.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      CATALYST_PARSER_MODEL: ${CATALYST_PARSER_MODEL:-claude-sonnet-5}
+      CATALYST_PARSER_MODEL: ${CATALYST_PARSER_MODEL:-claude-opus-5}
     ports:
       - '8000:8000'
     depends_on:
