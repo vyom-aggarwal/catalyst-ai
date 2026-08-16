@@ -42,9 +42,12 @@ from catalyst.domain.variants import (
     hgvs_of,
     label_of,
 )
+from catalyst.features import structure as structure_features
 from catalyst.models import (
+    ConstraintKind,
     Goal,
     ModelVersion,
+    NumberingScheme,
     ProvenanceEvent,
     ProvenanceEventKind,
     Run,
@@ -55,18 +58,22 @@ from catalyst.models import (
     Variant,
 )
 from catalyst.models.base import utcnow
-from catalyst.models.enums import RunStatus, StageStatus, StructureSource
+from catalyst.models.enums import NumberingKind, RunStatus, StageStatus, StructureSource
 from catalyst.providers import MetricSpec, Predictor, StructureRef, TargetContext, resolve
 from catalyst.services import constraints as constraint_service
 from catalyst.services import goals as goal_service
+from catalyst.services import projects as project_service
 from catalyst.services import providers as provider_service
 from catalyst.services.targets import (
     ServiceError,
     canonical_scheme,
     labels_of,
+    refetch_structure,
+    require_project,
     require_target,
     structures_for,
 )
+from catalyst.services.targets import schemes_for as service_schemes
 
 #: A run is handed to a queue by a caller-supplied function. Injected rather than
 #: imported so the service can be exercised without Redis, and so that the one
@@ -280,6 +287,11 @@ def create(
                 "goal": goal.parsed_spec,
                 "config": config,
                 "constraints": {str(k): sorted(v) for k, v in constrained.items()},
+                # The burial cutoffs change what the region column says without
+                # changing a coordinate, so they are part of this run's content.
+                "rsa_cutoffs": project_service.cutoffs_for(
+                    require_project(session, goal.project_id)
+                ).as_manifest(),
                 "models": [
                     {
                         "id": predictor.id,
@@ -410,6 +422,10 @@ class _State:
     candidates: list[VariantInput] = field(default_factory=list)
     enumeration: Enumeration | None = None
     variant_ids: dict[str, uuid.UUID] = field(default_factory=dict)
+    #: Geometry, when a reconciled structure made it measurable.
+    features: structure_features.FeatureSet | None = None
+    #: Why it was not, when it was not. Reaches the cell as a tooltip.
+    feature_note: str | None = None
     #: Metric id to the reason no number exists for it. Rendered as an em dash
     #: with this text on hover — never as an imputed value.
     unavailable: dict[str, str] = field(default_factory=dict)
@@ -560,33 +576,173 @@ def _execute_stage(
 # --------------------------------------------------------------------------- #
 
 
+def _author_scheme(
+    session: Session, target_id: uuid.UUID, structure: Structure
+) -> NumberingScheme | None:
+    """The reconciled PDB-author scheme for this structure, if the user saved one.
+
+    Features are computed only when it exists. Deriving the sequence-to-structure
+    mapping here instead would be exactly the silent inference ARCHITECTURE.md §9
+    forbids — and an off-by-one in it would misreport which residues are buried.
+    """
+    schemes = [
+        scheme
+        for scheme in service_schemes(session, target_id)
+        if scheme.kind is NumberingKind.PDB_AUTHOR
+    ]
+    exact = f"{structure.identifier} chain {structure.chain}, author numbering"
+    for scheme in schemes:
+        if scheme.label == exact:
+            return scheme
+    for scheme in schemes:
+        if structure.identifier and scheme.label.startswith(str(structure.identifier)):
+            return scheme
+    return None
+
+
+def _active_site_positions(session: Session, target_id: uuid.UUID) -> list[int]:
+    """The residues the user marked as catalytic or ligand-contacting.
+
+    Nothing is inferred. No pocket detection, no database lookup, no heuristic:
+    the active site is exactly what was annotated on the constraints screen, and
+    an empty set means the distance column reads as unavailable.
+    """
+    positions: set[int] = set()
+    for constraint in constraint_service.constraints_for(session, target_id):
+        if constraint.kind in (ConstraintKind.CATALYTIC, ConstraintKind.LIGAND_CONTACT):
+            positions.update(int(position) for position in constraint.positions)
+    return sorted(positions)
+
+
 def _stage_retrieve_structure(
     session: Session, run: Run, step: PlannedStage, state: _State
 ) -> _Outcome:
     reference = state.ctx.structure
     if reference is None:
+        state.feature_note = (
+            "No structure is attached to this target, so no geometry could be measured."
+        )
         return _Outcome(
             status=StageStatus.SKIPPED,
             logs=(
                 "No structure is attached to this target.\n"
                 "Predictors that require one are skipped below with that reason, "
-                "and their column reads as unavailable rather than as a number."
+                "and their column reads as unavailable rather than as a number.\n"
+                "Solvent accessibility, burial class and distance to the active "
+                "site are unavailable for the same reason."
             ),
         )
+
     kind = "predicted model" if reference.is_predicted else "experimental structure"
+    lines = [
+        f"Using {reference.source} {reference.identifier or '(uploaded)'} "
+        f"chain {reference.chain or '?'} — a {kind}.",
+        f"Content address {reference.content_hash}.",
+        "Structures are addressed by content, so a file that changed since it "
+        "was attached would produce a different address and a different result "
+        "rather than a stale one.",
+    ]
+    payload: dict[str, Any] = {
+        "structure": reference.content_hash,
+        "source": reference.source,
+    }
+
+    lines.extend(_measure_geometry(session, run, state))
+    if state.features is not None:
+        payload["features"] = len(state.features.residues)
+
     return _Outcome(
         status=StageStatus.SUCCEEDED,
-        logs=(
-            f"Using {reference.source} {reference.identifier or '(uploaded)'} "
-            f"chain {reference.chain or '?'} — a {kind}.\n"
-            f"Content address {reference.content_hash}.\n"
-            "Structures are addressed by content, so a file that changed since it "
-            "was attached would produce a different address and a different result "
-            "rather than a stale one."
-        ),
+        logs="\n".join(lines),
         input_hash=reference.content_hash,
-        payload={"structure": reference.content_hash, "source": reference.source},
+        payload=payload,
     )
+
+
+def _measure_geometry(session: Session, run: Run, state: _State) -> list[str]:
+    """Compute solvent accessibility and active-site distance, or say why not.
+
+    Everything that could make these numbers mean something different — the
+    reference table, the radii set, the probe radius, the cutoffs in force, the
+    coordinate set, how ligands were handled — is written to an append-only
+    provenance event. Specification §2.2 applies to a derived feature exactly as
+    it applies to a model score.
+    """
+    target = state.target
+    structures = structures_for(session, target.id)
+    if not structures:
+        return []
+    structure = structures[-1]
+
+    scheme = _author_scheme(session, target.id, structure)
+    if scheme is None:
+        state.feature_note = (
+            "This structure's numbering has not been reconciled to the sequence, so "
+            "no residue could be identified in it without guessing."
+        )
+        return [
+            "Geometry not measured: " + state.feature_note,
+            "Reconcile this structure on the target page, then re-run.",
+        ]
+
+    try:
+        fetched = refetch_structure(structure)
+    except ServiceError as error:
+        # A content-hash mismatch is different and is allowed to fail the run:
+        # it means the file changed underneath this target.
+        if "has changed since it was attached" in str(error):
+            raise
+        state.feature_note = str(error)
+        return [f"Geometry not measured: {error}"]
+
+    cutoffs = project_service.cutoffs_for(require_project(session, run.project_id))
+    active = _active_site_positions(session, target.id)
+
+    try:
+        features = structure_features.compute(
+            structure_text=fetched.text,
+            chain_id=structure.chain or "A",
+            sequence=target.sequence,
+            author_labels=labels_of(scheme),
+            active_site_positions=active,
+            cutoffs=cutoffs,
+            coordinate_source=(
+                f"{structure.source.value} {structure.identifier} as downloaded, "
+                f"content {short(structure.content_hash)}"
+            ),
+        )
+    except structure_features.StructureFeatureError as error:
+        state.feature_note = str(error)
+        return [f"Geometry not measured: {error}"]
+
+    state.features = features
+    _record(
+        session,
+        kind=ProvenanceEventKind.FEATURES_COMPUTED,
+        run=run,
+        subject_type="run_features",
+        payload=features.to_json(),
+    )
+
+    manifest = features.manifest
+    lines = [
+        f"Measured solvent accessibility for {len(features.residues):,} residues "
+        f"of chain {manifest['chain_measured']}.",
+        f"Coordinates: {manifest['assembly']}.",
+        f"Normalised by {manifest['reference_set']} (doi:{manifest['reference_doi']}).",
+        f"Shrake-Rupley, probe {manifest['sasa']['probe_radius_angstrom']} A, "
+        f"{manifest['sasa']['point_number']} points, {manifest['sasa']['vdw_radii']}, "
+        f"{manifest['sasa']['atoms']}.",
+        f"Burial: core RSA < {cutoffs.core_max}, surface RSA > {cutoffs.surface_min}.",
+        f"Ligands: {manifest['ligand_handling']}.",
+    ]
+    if active:
+        lines.append(
+            f"Distance measured to {len(active)} annotated active-site residue(s), "
+            "minimum non-hydrogen atom separation."
+        )
+    lines.extend(features.notes)
+    return lines
 
 
 def _stage_build_msa(session: Session, run: Run, step: PlannedStage, state: _State) -> _Outcome:
@@ -1233,6 +1389,13 @@ class RankedVariant:
     disagreement: float | None
     sources_scored: int
     cells: tuple[ScoreCell, ...]
+    #: Geometry for this residue, or an empty mapping when it was not measured.
+    features: Mapping[str, Any] = field(default_factory=dict)
+    #: The constraint kinds that removed this variant, when it was removed.
+    #: Empty for everything that survived. Specification §5.3 requires a filtered
+    #: variant to stay retrievable with its reason, so it can be asked for here
+    #: rather than living only in a separate list.
+    filtered_by: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1248,24 +1411,67 @@ class Ranking:
     budget: int | None
     is_demo: bool
     rows: tuple[RankedVariant, ...]
+    #: Every parameter that produced the geometry columns. Empty when they were
+    #: not computed, in which case `features_note` says why.
+    features_manifest: Mapping[str, Any] = field(default_factory=dict)
+    features_note: str | None = None
 
 
-def ranking(session: Session, *, run_id: uuid.UUID, limit: int | None = None) -> Ranking:
-    """The ranked result of a run: aggregate, filter, rank, in that order."""
+def feature_record(session: Session, run: Run) -> dict[str, Any]:
+    """This run's derived features, as the run recorded them.
+
+    Read from the append-only event rather than recomputed, so changing a
+    project's cutoffs tomorrow cannot restate what a run said today.
+    """
+    event = session.exec(
+        select(ProvenanceEvent)
+        .where(
+            col(ProvenanceEvent.run_id) == run.id,
+            col(ProvenanceEvent.kind) == ProvenanceEventKind.FEATURES_COMPUTED,
+        )
+        .order_by(col(ProvenanceEvent.created_at).desc())
+    ).first()
+    if event is None:
+        return {}
+    return dict(event.payload)
+
+
+def ranking(
+    session: Session,
+    *,
+    run_id: uuid.UUID,
+    limit: int | None = None,
+    include_filtered: bool = False,
+) -> Ranking:
+    """The ranked result of a run: aggregate, filter, rank, in that order.
+
+    `include_filtered` puts the variants a constraint removed back into the
+    ranking, each carrying the constraint that removed it. They are never
+    included by default — a hard filter that quietly returns its own output is
+    not a filter — but they stay retrievable, which the specification requires.
+    """
     run = require_run(session, run_id)
     target = require_target(session, run.target_id)
     scheme = canonical_scheme(session, target.id)
     result = _aggregate_run(session, run)
     record = filter_record(session, run)
-    removed = set(record.get("removed", {}))
+    removed_by: dict[str, list[str]] = dict(record.get("removed", {}))
+    removed = set(removed_by)
 
-    surviving = [row for row in result.rows if row.code not in removed]
+    surviving = (
+        list(result.rows)
+        if include_filtered
+        else [row for row in result.rows if row.code not in removed]
+    )
     budget = run.config.get("max_variants")
     presented = ranking_math.top(surviving, limit if limit is not None else budget)
 
     positions = _positions_of(session, target.id, [row.code for row in presented])
     versions = model_versions_of(session, run.id)
     unavailable = _unavailable_metrics(session, run)
+
+    measured = feature_record(session, run)
+    by_position: dict[str, dict[str, Any]] = measured.get("positions", {})
 
     rows = tuple(
         RankedVariant(
@@ -1278,6 +1484,8 @@ def ranking(session: Session, *, run_id: uuid.UUID, limit: int | None = None) ->
             disagreement=None if row.disagreement is None else round(row.disagreement, 4),
             sources_scored=row.sources_scored,
             cells=result.cells.get(row.code, ()),
+            features=by_position.get(str(positions.get(row.code)), {}),
+            filtered_by=tuple(removed_by.get(row.code, ())),
         )
         for index, row in enumerate(presented)
     )
@@ -1293,7 +1501,32 @@ def ranking(session: Session, *, run_id: uuid.UUID, limit: int | None = None) ->
         budget=budget if isinstance(budget, int) else None,
         is_demo=any(version.is_mock for version in versions.values()),
         rows=rows,
+        features_manifest=measured.get("manifest", {}),
+        features_note=_features_note(session, run, measured),
     )
+
+
+def _features_note(session: Session, run: Run, measured: Mapping[str, Any]) -> str | None:
+    """Why the geometry columns are empty, when they are.
+
+    Taken from the stage that tried, so the explanation on the cell is the same
+    sentence the run view shows — not a second one written for the table.
+    """
+    if measured:
+        notes = measured.get("notes") or []
+        return "; ".join(str(note) for note in notes) or None
+
+    for stage in _stages_of(session, run.id):
+        if stage.name == "retrieve structure":
+            for line in (stage.logs or "").splitlines():
+                if line.startswith("Geometry not measured:"):
+                    return line.removeprefix("Geometry not measured:").strip()
+            if stage.status is StageStatus.SKIPPED:
+                return (
+                    "No structure is attached to this target, so no geometry could "
+                    "be measured."
+                )
+    return None
 
 
 def _unavailable_metrics(session: Session, run: Run) -> dict[str, str]:

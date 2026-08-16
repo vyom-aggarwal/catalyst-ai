@@ -22,6 +22,16 @@ class Project(TimestampedModel, table=True):
         description="Short human summary shown in the projects table. The machine-"
         "readable objective lives on Goal.parsed_spec.",
     )
+    settings: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_type=JSONB,
+        nullable=False,
+        description="Project-level scientific settings, currently the RSA cutoffs "
+        "separating core from boundary from surface. Empty means the defaults are "
+        "in force. Whatever value is in force when a run executes is copied into "
+        "that run's provenance record, so changing it later cannot rewrite what an "
+        "earlier run reported.",
+    )
     last_activity_at: datetime | None = utc_timestamp(nullable=True)
 
 

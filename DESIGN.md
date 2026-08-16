@@ -206,6 +206,23 @@ The persistent amber bar stays as it is: not dismissible, on every screen, whene
 active provider fabricates. The mark is per-number; the bar is per-screen; both are
 required and neither substitutes for the other.
 
+### 1.11 The cofactor mark
+
+A second typographic mark, and the last one: a `--warn` dagger `†` after a burial class,
+meaning *this residue is exposed in the protein alone and buried once cofactors are
+present*. The number beside it is the apo value, which is the honest one to report and
+also the misleading one to read alone, so the mark carries the holo value in its tooltip.
+
+Two marks now exist in the product and both mean "this number needs a caveat you cannot
+see". No third one may be added without a reason of the same weight.
+
+### 1.12 Third-party rendering surfaces
+
+Mol\* draws to its own WebGL canvas inside the inspector. It is embedded headless — its
+toolbars, panels and skin are **not** used, because every visual decision in this product
+is ours. The canvas is the one rectangle on screen this design system does not govern,
+and it is bounded by a standard panel border like any other figure.
+
 ---
 
 ## 2. Layout

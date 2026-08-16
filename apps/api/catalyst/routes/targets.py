@@ -10,6 +10,7 @@ import uuid
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
@@ -351,6 +352,38 @@ def render_mutation(target_id: uuid.UUID, code: str, session: SessionDep) -> Mut
         scheme_label=scheme.label,
         rendered=mutation.render(scheme.label),
     )
+
+
+@router.get("/targets/{target_id}/structure", response_class=PlainTextResponse)
+def structure_coordinates(target_id: uuid.UUID, session: SessionDep) -> str:
+    """The coordinates this target's structure viewer renders.
+
+    Served through the API rather than pointed at RCSB from the browser, for two
+    reasons: the content hash recorded at attach time is verified on the way
+    through, so the viewer cannot show a file that has changed underneath the
+    target; and the viewer does not need to know which of several sources a
+    structure came from.
+    """
+    try:
+        target = service.require_target(session, target_id)
+    except Handled as error:
+        raise _fail(error, status=404) from error
+
+    attached = service.structures_for(session, target.id)
+    if not attached:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "No structure is attached to this target.",
+                "remedy": "Attach a PDB entry or an AlphaFold model on the target page.",
+            },
+        )
+
+    try:
+        fetched = service.refetch_structure(attached[-1])
+    except Handled as error:
+        raise _fail(error) from error
+    return fetched.text
 
 
 class TrackResidue(BaseModel):

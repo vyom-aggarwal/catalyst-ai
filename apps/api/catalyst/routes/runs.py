@@ -254,6 +254,28 @@ class MetricOut(BaseModel):
     reports_interval: bool
 
 
+class FeaturesOut(BaseModel):
+    """Geometry for one residue. Every field may be null, and null means the
+    calculation did not produce it — never zero, never a default."""
+
+    #: How the structure file numbers this residue. The viewer addresses
+    #: residues in author numbering; the table shows the canonical scheme.
+    author_label: str | None = None
+    #: Absolute solvent accessible surface area, square angstroms.
+    asa: float | None = None
+    #: ASA over the published maximum for this residue type.
+    rsa: float | None = None
+    #: core / boundary / surface under the cutoffs recorded in the manifest.
+    region: str | None = None
+    #: True when the residue is exposed in the protein alone and buried once
+    #: cofactors are included. The reported RSA is the apo value; this says the
+    #: apo value is misleading here.
+    buried_by_ligand: bool = False
+    rsa_with_ligands: float | None = None
+    #: Minimum non-hydrogen atom distance to the user-annotated active site.
+    distance_to_active_site: float | None = None
+
+
 class RankedOut(BaseModel):
     rank: int
     #: Written in the canonical numbering scheme named by `scheme_label`, and
@@ -263,6 +285,9 @@ class RankedOut(BaseModel):
     label: str
     #: The sequence index behind the code. For the structure viewer, not display.
     sequence_position: int | None
+    features: FeaturesOut = Field(default_factory=FeaturesOut)
+    #: The constraint kinds that removed this variant. Empty for survivors.
+    filtered_by: list[str] = Field(default_factory=list)
     #: Mean of the predictors' normalised ranks. Not a physical quantity.
     consensus: float
     #: Spread between them. Null when only one predictor scored this variant —
@@ -287,16 +312,25 @@ class RankingOut(BaseModel):
     budget: int | None
     is_demo: bool
     rows: list[RankedOut]
+    #: Every parameter that produced the geometry columns: the reference table
+    #: and its DOI, the radii set, the probe radius, the cutoffs in force, the
+    #: coordinate set, and how ligands were handled. Empty when nothing was
+    #: measured, in which case `features_note` says why.
+    features_manifest: dict[str, Any] = Field(default_factory=dict)
+    features_note: str | None = None
 
 
 @router.get("/runs/{run_id}/ranking", response_model=RankingOut)
 def get_ranking(
     run_id: uuid.UUID,
     session: SessionDep,
-    limit: Annotated[int | None, Query(ge=1, le=10000)] = None,
+    limit: Annotated[int | None, Query(ge=1, le=100000)] = None,
+    include_filtered: bool = False,
 ) -> RankingOut:
     try:
-        result = service.ranking(session, run_id=run_id, limit=limit)
+        result = service.ranking(
+            session, run_id=run_id, limit=limit, include_filtered=include_filtered
+        )
     except ServiceError as error:
         raise _fail(error, status=404) from error
 
@@ -320,6 +354,8 @@ def get_ranking(
         total_ranked=result.total_ranked,
         budget=result.budget,
         is_demo=result.is_demo,
+        features_manifest=dict(result.features_manifest),
+        features_note=result.features_note,
         rows=[
             RankedOut(
                 rank=row.rank,
@@ -327,6 +363,8 @@ def get_ranking(
                 hgvs=row.hgvs,
                 label=row.label,
                 sequence_position=row.sequence_position,
+                features=FeaturesOut(**dict(row.features)),
+                filtered_by=list(row.filtered_by),
                 consensus=row.consensus,
                 disagreement=row.disagreement,
                 sources_scored=row.sources_scored,

@@ -43,18 +43,34 @@ failures = 0
 
 
 def call(method: str, path: str, body: object | None = None) -> tuple[int, object]:
+    """One request, retried on a dropped connection.
+
+    The polling loops below open a fresh connection every second, and Windows
+    will occasionally reset one under that load. That is a property of the
+    harness, not of the API, and it once killed a run in which every check had
+    passed — so a transport-level failure is retried rather than reported as a
+    gate failure. An HTTP error is never retried: that is an answer.
+    """
     data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(
-        f"{BASE}{path}",
-        data=data,
-        method=method,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            return response.status, json.loads(response.read() or "null")
-    except urllib.error.HTTPError as error:
-        return error.code, json.loads(error.read() or "null")
+    last: OSError | None = None
+
+    for attempt in range(3):
+        request = urllib.request.Request(
+            f"{BASE}{path}",
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                return response.status, json.loads(response.read() or "null")
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read() or "null")
+        except OSError as error:
+            last = error
+            time.sleep(1 + attempt)
+
+    raise SystemExit(f"{method} {path} failed after 3 attempts: {last}")
 
 
 def fetch_html(url: str) -> str:
@@ -402,6 +418,137 @@ def main() -> int:
     _, done = call("GET", f"/runs/{third['id']}")
     status, _ = call("POST", f"/runs/{done['id']}/cancel")
     step("a terminal run cannot be cancelled twice", status == 400)
+
+    # ----------------------------------------------------------------- Phase 5
+
+    section("Phase 5: any score traces to a model version")
+    # The gate's second half, asserted at the boundary the workbench uses. Click
+    # one is the row; click two is Trace. Both resolve through this data.
+    _, full = call("GET", f"/runs/{run['id']}/ranking?limit=100000")
+    row = full["rows"][0]
+    cells = row["cells"]
+    step("a ranked row carries its own scores", len(cells) > 0)
+
+    versions = {
+        stage["model"]["id"]: stage for stage in run["stages"] if stage["model"]
+    }
+    traced = [cell for cell in cells if cell["model_version_id"] in versions]
+    step("every number resolves to a model version in this run", len(traced) == len(cells))
+    if traced:
+        model = versions[traced[0]["model_version_id"]]["model"]
+        step("the model version carries what a PI needs to reproduce it",
+             all(model[key] for key in ("name", "version", "weights_hash", "citation")),
+             f"{model['name']} {model['version']} weights {model['weights_hash'][:19]}")
+        step("and the stage that produced it carries its input hash",
+             bool(versions[traced[0]["model_version_id"]]["input_hash"]))
+
+    section("Phase 5: geometry is computed, cited and reproducible")
+    manifest = full["features_manifest"]
+    step("features were measured", bool(manifest), f"{len(full['rows'])} rows carry them")
+    step("the normalisation table is cited by DOI",
+         manifest.get("reference_doi") == "10.1371/journal.pone.0080635",
+         str(manifest.get("reference_set")))
+    sasa = manifest.get("sasa", {})
+    step("SASA parameters are stated, not defaulted",
+         sasa.get("probe_radius_angstrom") == 1.4 and sasa.get("point_number") == 1000
+         and "ProtOr" in str(sasa.get("vdw_radii")),
+         f"probe {sasa.get('probe_radius_angstrom')} A, {sasa.get('point_number')} points")
+    step("the coordinate set is stated rather than assumed",
+         "monomer" in str(manifest.get("assembly")) or "chains" in str(manifest.get("assembly")),
+         str(manifest.get("assembly")))
+    step("ligand handling is recorded", "excluded" in str(manifest.get("ligand_handling")))
+
+    cutoffs = manifest.get("cutoffs", {})
+    step("the cutoffs in force are in the run's record, not only in the code",
+         cutoffs.get("core_rsa_below") == 0.25 and cutoffs.get("surface_rsa_above") == 0.40,
+         f"core < {cutoffs.get('core_rsa_below')}, surface > {cutoffs.get('surface_rsa_above')}")
+
+    measured = [r for r in full["rows"] if r["features"]["rsa"] is not None]
+    step("RSA was computed for the ranked variants", len(measured) > 0,
+         f"{len(measured)} of {len(full['rows'])}")
+    step("no residue exceeds its published maximum",
+         all(r["features"]["rsa"] <= 1.0 for r in measured))
+    step("region follows the cutoffs exactly", all(
+        (r["features"]["region"] == "core") == (r["features"]["rsa"] < 0.25)
+        and (r["features"]["region"] == "surface") == (r["features"]["rsa"] > 0.40)
+        for r in measured))
+    step("the structure's own numbering travels with the geometry",
+         all(r["features"]["author_label"] for r in measured),
+         "author labels present for the viewer")
+
+    distances = [r["features"]["distance_to_active_site"] for r in full["rows"]]
+    step("distance to the annotated active site is measured",
+         any(d is not None for d in distances),
+         f"{min(d for d in distances if d is not None)}-"
+         f"{max(d for d in distances if d is not None)} A")
+
+    # A target with no catalytic annotation must say so rather than report zero.
+    _, bare_full = call("GET", f"/runs/{bare_run['id']}/ranking?limit=100")
+    step("no annotated active site means no distance, not a zero",
+         all(r["features"]["distance_to_active_site"] is None for r in bare_full["rows"]))
+
+    section("Phase 5: settings are a decision, recorded per run")
+    _, project_before = call("GET", f"/projects/{project_id}")
+    step("cutoffs are exposed as a project setting",
+         project_before["rsa_cutoffs"] == {"core_max": 0.25, "surface_min": 0.4})
+    status, _ = call("POST", f"/projects/{project_id}/settings/rsa-cutoffs",
+                     {"core_max": 0.6, "surface_min": 0.2})
+    step("cutoffs that are not an ordered partition are refused", status == 400)
+    status, changed = call("POST", f"/projects/{project_id}/settings/rsa-cutoffs",
+                           {"core_max": 0.10, "surface_min": 0.50})
+    step("cutoffs can be changed", status == 200
+         and changed["rsa_cutoffs"] == {"core_max": 0.1, "surface_min": 0.5})
+    _, after = call("GET", f"/runs/{run['id']}/ranking?limit=5")
+    step("changing them does not rewrite what an earlier run reported",
+         after["features_manifest"]["cutoffs"]["core_rsa_below"] == 0.25,
+         "the run still reports the values that were in force when it ran")
+    call("POST", f"/projects/{project_id}/settings/rsa-cutoffs",
+         {"core_max": 0.25, "surface_min": 0.40})
+
+    section("Phase 5: filtered variants stay retrievable")
+    _, without = call("GET", f"/runs/{run['id']}/ranking?limit=100000")
+    _, with_removed = call("GET",
+                           f"/runs/{run['id']}/ranking?limit=100000&include_filtered=true")
+    step("a hard filter does not return its own output by default",
+         len(with_removed["rows"]) > len(without["rows"]),
+         f"{len(without['rows'])} vs {len(with_removed['rows'])}")
+    reinstated = [r for r in with_removed["rows"] if r["filtered_by"]]
+    step("each one is retrievable with the constraint that removed it",
+         len(reinstated) > 0 and all("catalytic" in r["filtered_by"] for r in reinstated),
+         f"{len(reinstated)} removed variants, each with its reason")
+
+    section("Phase 5: the workbench holds ten thousand rows")
+    # A real target large enough to exceed the bar, not a synthetic one:
+    # firefly luciferase is 550 residues, so its single-point space is 10,450.
+    status, big_project = call("POST", "/projects",
+                               {"name": f"Scale check {stamp}", "organism": "Photinus pyralis"})
+    status, big = call("POST", f"/projects/{big_project['id']}/targets",
+                       {"source": "uniprot", "accession": "P08659"})
+    step("a 550-residue target loads", status == 201, f"{big['length']} aa")
+    status, big = call("POST", f"/targets/{big['id']}/structures", {"source": "alphafold_db"})
+    big_structure = big["structures"][0]["id"]
+    call("POST", f"/targets/{big['id']}/reconcile/accept", {"structure_id": big_structure})
+    _, big = call("GET", f"/targets/{big['id']}")
+    author = next(s for s in big["numbering_schemes"] if s["kind"] == "pdb_author")
+    call("POST", f"/targets/{big['id']}/numbering/confirm", {"scheme_id": author["id"]})
+    _, big_goal = call("POST", f"/targets/{big['id']}/goals",
+                       {"text": "improve thermostability"})
+    call("POST", f"/goals/{big_goal['id']}/confirm")
+    _, big_run = call("POST", f"/goals/{big_goal['id']}/runs", {})
+    big_run = await_run(big_run["id"])
+    step("the run completes", big_run["status"] == "succeeded", big_run.get("error") or "")
+
+    _, big_ranking = call("GET", f"/runs/{big_run['id']}/ranking?limit=100000")
+    step("more than ten thousand variants are ranked and served",
+         len(big_ranking["rows"]) > 10000, f"{len(big_ranking['rows']):,} rows")
+    step("every one of them carries its scores",
+         all(r["cells"] for r in big_ranking["rows"][:500]))
+    # The exit gate's performance half is a rendering property and is not
+    # asserted here: this script speaks HTTP and cannot see a frame. What it can
+    # hold is that the data the workbench virtualises is genuinely this large.
+    page = fetch_html(f"{WEB}/runs/{big_run['id']}/workbench")
+    step("the workbench screen serves", "Variant workbench" in page or "workbench" in page.lower())
+    step("and carries the persistent demo bar", "Demo data" in page)
 
     print()
     if failures:

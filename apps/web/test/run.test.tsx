@@ -70,6 +70,8 @@ function ranking(overrides: Partial<Ranking> = {}): Ranking {
     total_ranked: 3420,
     budget: 96,
     is_demo: true,
+    features_manifest: {},
+    features_note: null,
     rows: [
       {
         rank: 1,
@@ -77,6 +79,16 @@ function ranking(overrides: Partial<Ranking> = {}): Ranking {
         hgvs: 'p.Ser77Ala',
         label: '77',
         sequence_position: 108,
+        features: {
+          author_label: '108',
+          asa: 3.2,
+          rsa: 0.02,
+          region: 'core' as const,
+          buried_by_ligand: false,
+          rsa_with_ligands: 0.02,
+          distance_to_active_site: 0.0,
+        },
+        filtered_by: [],
         consensus: 0.9971,
         disagreement: 0.0012,
         sources_scored: 2,

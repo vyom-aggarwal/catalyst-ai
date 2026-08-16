@@ -142,6 +142,14 @@ export const targetSummarySchema = z.object({
   canonical_scheme_label: z.string().nullable(),
 })
 
+/** Where core stops and surface starts. A project-level scientific setting. */
+export const rsaCutoffsSchema = z.object({
+  core_max: z.number(),
+  surface_min: z.number(),
+})
+
+export type RsaCutoffs = z.infer<typeof rsaCutoffsSchema>
+
 export const projectDetailSchema = z.object({
   id: z.string().uuid(),
   name: z.string(),
@@ -149,6 +157,7 @@ export const projectDetailSchema = z.object({
   objective: z.string().nullable(),
   created_at: z.string().datetime({ offset: true }),
   targets: z.array(targetSummarySchema),
+  rsa_cutoffs: rsaCutoffsSchema,
 })
 
 export type ProjectDetail = z.infer<typeof projectDetailSchema>
@@ -417,6 +426,34 @@ export const metricSchema = z.object({
 
 export type Metric = z.infer<typeof metricSchema>
 
+/**
+ * Geometry for one residue. Every field may be null, and null means the
+ * calculation did not produce it — never zero, never a default.
+ */
+export const residueFeaturesSchema = z.object({
+  /**
+   * How the structure file numbers this residue. The viewer addresses residues
+   * in author numbering; the table shows the canonical scheme. They are
+   * different numbers and are never converted by arithmetic.
+   */
+  author_label: z.string().nullable().default(null),
+  /** Absolute solvent accessible surface area, square angstroms. */
+  asa: z.number().nullable().default(null),
+  /** ASA over the published maximum for this residue type (Tien 2013). */
+  rsa: z.number().nullable().default(null),
+  region: z.enum(['core', 'boundary', 'surface']).nullable().default(null),
+  /**
+   * Exposed in the protein alone, buried once cofactors are present. The
+   * reported RSA is the apo value; this says the apo value is misleading here.
+   */
+  buried_by_ligand: z.boolean().default(false),
+  rsa_with_ligands: z.number().nullable().default(null),
+  /** Minimum non-hydrogen atom distance to the user-annotated active site. */
+  distance_to_active_site: z.number().nullable().default(null),
+})
+
+export type ResidueFeatures = z.infer<typeof residueFeaturesSchema>
+
 export const rankedVariantSchema = z.object({
   rank: z.number().int(),
   /** Written in the canonical numbering scheme, never in sequence index. */
@@ -424,12 +461,15 @@ export const rankedVariantSchema = z.object({
   hgvs: z.string(),
   label: z.string(),
   sequence_position: z.number().int().nullable(),
+  features: residueFeaturesSchema,
   /** Mean of the predictors' normalised ranks. Not a physical quantity. */
   consensus: z.number(),
   /** Null when only one predictor scored it — zero would read as unanimity. */
   disagreement: z.number().nullable(),
   sources_scored: z.number().int(),
   cells: z.array(scoreCellSchema),
+  /** The constraint kinds that removed this variant. Empty for survivors. */
+  filtered_by: z.array(z.string()).default([]),
 })
 
 export type RankedVariant = z.infer<typeof rankedVariantSchema>
@@ -446,6 +486,13 @@ export const rankingSchema = z.object({
   budget: z.number().int().nullable(),
   is_demo: z.boolean(),
   rows: z.array(rankedVariantSchema),
+  /**
+   * Every parameter that produced the geometry columns: reference table and
+   * DOI, radii set, probe radius, cutoffs in force, coordinate set, ligand
+   * handling. Empty when nothing was measured — `features_note` says why.
+   */
+  features_manifest: z.record(z.string(), z.unknown()).default({}),
+  features_note: z.string().nullable().default(null),
 })
 
 export type Ranking = z.infer<typeof rankingSchema>

@@ -3,7 +3,7 @@
 You are picking up a multi-session build. This file orients you; it is the first
 thing to read and the last thing to update.
 
-Status current as of **2026-08-15, end of Phase 4**.
+Status current as of **2026-08-16, end of Phase 5**.
 
 ---
 
@@ -43,14 +43,15 @@ imputed value. An unstated field means "not stated", never a plausible default.
 | 2 — target setup, numbering reconciliation, sequence track          | Done        |
 | 3 — constraints, goal composer, confirmable parse                   | Done        |
 | 4 — job queue, `Predictor`, `MockProvider`, run view                | Done        |
-| 5 — variant workbench, Mol\*, provenance drawer                     | **Next**    |
-| 6 — real `ESMScorer` + `StabilityPredictor`                         | Not started |
+| 5 — variant workbench, Mol\*, provenance drawer                     | Done        |
+| 6 — real `ESMScorer` + `StabilityPredictor`                         | **Next**    |
 | 7 — design sets, epistasis, wet-lab handoff                         | Not started |
 | 8 — results intake, calibration, scorecard                          | Not started |
 | 9 — Playwright, a11y, README                                        | Not started |
 
-Exit gates for each phase are in `BRIEF.md` §9. Phase 5's is: _10,000 rows
-scroll at 60fps and any score traces to a model version in two clicks._
+Exit gates for each phase are in `BRIEF.md` §9. Phase 6 has no stated exit
+gate; it is real `ESMScorer` + `StabilityPredictor`, disagreement surfacing and
+an agreement column.
 
 ## 4. Verify before you change anything
 
@@ -59,17 +60,18 @@ docker compose up -d
 python scripts/verify_gates.py
 ```
 
-75 checks asserting the Phase 2, 3 and 4 exit gates end to end over HTTP. It
-seeds its own project and target, so it is idempotent and safe to re-run. **Add
-a section to it for each phase you complete.** The Phase 4 section needs the
+105 checks asserting the Phase 2, 3, 4 and 5 exit gates end to end over HTTP.
+It seeds its own projects and targets, so it is idempotent and safe to re-run.
+**Add a section to it for each phase you complete.** The Phase 4 section needs the
 `worker` container; it checks that first and says so if nothing is consuming the
-queue.
+queue. The Phase 5 section loads a 550-residue target and runs it, so a full pass
+now takes a few minutes and several UniProt/AlphaFold fetches.
 
 Per-package gates, all currently green:
 
 ```sh
-pnpm typecheck && pnpm lint && pnpm test           # 97 vitest
-cd apps/api && .venv/Scripts/python -m pytest -q   # 225 pytest
+pnpm typecheck && pnpm lint && pnpm test           # 113 vitest
+cd apps/api && .venv/Scripts/python -m pytest -q   # 241 pytest
 cd apps/api && .venv/Scripts/ruff check . && .venv/Scripts/mypy catalyst
 ```
 
@@ -109,9 +111,36 @@ individual number, `ModelVersion.is_mock` in the database, and `is_demo` on the
 run and the ranking. Nothing outside `catalyst/providers/mock.py` invents a
 number. Do not describe any ranking this build produces as a prediction.
 
-**The 10,000-row bar has not been measured.** A run on the seeded lipase produces
-3,439 variants and the run view previews ten of them in a plain table. Phase 5's
-gate is 60fps at 10,000 rows on TanStack Virtual, and nothing has been profiled.
+**The 60fps half of the Phase 5 gate has NOT been measured, and cannot be from
+here.** The agent's browser pane runs hidden, so the page never composites and
+`requestAnimationFrame` never fires — which also means TanStack Virtual never
+recalculates, so a scroll cannot even be simulated. Verified directly:
+`rafFiredWithin500ms: false`, and the top row did not change after moving
+`scrollTop` to 150,000.
+
+What **was** measured, on a real 10,450-row ranking (firefly luciferase P08659,
+550 residues):
+
+| Measurement                        | Value                              |
+| ---------------------------------- | ---------------------------------- |
+| Ranked rows served                 | 10,450                             |
+| `<tr>` in the DOM                  | 32                                 |
+| DOM nodes, whole page              | 772 (0.074 per ranked row)         |
+| Scroll height                      | 313,660px vs 10,450 × 30px expected |
+| Synchronous scroll + forced layout | 0.8ms                              |
+
+That establishes the property 60fps depends on — the work per frame is constant
+rather than proportional to the row count — but it is **not** a frame rate.
+**Someone with a visible browser must scroll it and watch.** Until then, do not
+claim the Phase 5 gate is fully met.
+
+**Mol\* has never been looked at.** It reports `ready` — WebGL initialised, the
+coordinates were fetched from our own API, parsed, and the default preset
+applied — and the residue-focus call is wrapped so a failure cannot take the
+panel down. But everything it draws goes to a canvas, so *nothing* about the
+image is verified: not that a structure is visible, not that the camera focused
+the right residue, not that it is legible against our surface colour. This is
+the one thing in the build that cannot be checked from the DOM.
 
 **Nothing has been re-run after a structure changed underneath a target.** The
 content-address check that would catch it exists and is unit-tested; the live
@@ -151,17 +180,36 @@ Not derivable from the code. These were agreed with the owner.
 - **The consensus is not stored.** It is not a model output and would need a
   fabricated `ModelVersion` to become a `Score`. Aggregation, filtering and
   ranking are recomputed from stored scores on every read.
+- **Solvent accessibility uses `biotite`, not an implementation of ours** — the
+  owner's call, and the reason is the radii set, not the effort. A DSSP-agreement
+  test alone would not have caught a radii swap: a uniform-radius model correlates
+  with DSSP at r=0.998 while moving 8 of TEM-1's 263 residues across a region
+  boundary. Two tests ship: agreement with published DSSP for the absolute values,
+  and a golden table to pin the radii set and the reference table.
+- **Mutant rotamers are not modelled, and the toggle was dropped.** `BRIEF.md`
+  §5.6 asks for a wild-type/mutant toggle in the viewer. Placing a mutant side
+  chain needs a packer this build does not have, and a toggle that redrew the
+  wild-type residue under a "mutant" label would fabricate structural data. The
+  panel states the limitation instead. Assistant decision; reversible the moment
+  a packer lands.
 
 ## 7. Open scientific decisions — ask, never decide
 
 Each changes the advice this product gives a bench scientist.
 
-| Decision                                                                     | Blocks                          |
-| ---------------------------------------------------------------------------- | ------------------------------- |
-| Relative-solvent-accessibility cutoffs separating core / boundary / surface  | Phase 5 rationale text, Phase 6 |
-| Which objectives each **real** predictor may be offered for                  | Phase 6                         |
-| Primer Tm algorithm and its parameters                                       | Phase 7 wet-lab handoff         |
-| Fuzzy-join thresholds matching bench measurements to variants                | Phase 8 validation loop         |
+| Decision                                                     | Blocks                  |
+| ------------------------------------------------------------ | ----------------------- |
+| Which objectives each **real** predictor may be offered for  | Phase 6                 |
+| Primer Tm algorithm and its parameters                       | Phase 7 wet-lab handoff |
+| Fuzzy-join thresholds matching bench measurements to variants | Phase 8 validation loop |
+
+**Settled in Phase 5** by the owner, and now encoded — see `ARCHITECTURE.md` §11:
+relative solvent accessibility is ASA / MaxASA using Tien et al. 2013 *theoretical*
+(doi:10.1371/journal.pone.0080635); Shrake-Rupley via `biotite` with probe 1.4 Å,
+1000 points, ProtOr radii, heavy atoms only; core RSA < 0.25, boundary 0.25–0.40,
+surface > 0.40, as a **project setting** with those defaults; distance to the
+active site is the minimum non-hydrogen atom separation to the residues the user
+annotated as catalytic or ligand-contacting, and nothing is inferred.
 
 On the second row: `Predictor.objectives` decides what the goal composer greys
 out. The mock's coverage was chosen so the whole interface is exercisable and is
@@ -170,46 +218,49 @@ objectives. Before Phase 6 the owner must state, per real predictor, which
 objectives it may be offered for. Inheriting the mock's list would have a
 stability model quietly answering a specificity question.
 
-`Variant.region` (core / boundary / surface) is null on every row and will stay
-null until the RSA cutoffs are settled. The column exists; nothing populates it.
+`Variant.region` on the table is still null: burial is computed per run and stored
+in that run's `FEATURES_COMPUTED` provenance event, not on the variant row, because
+a variant is shared across runs and the cutoffs are not. The column on the table is
+now unused — Phase 6 should either populate it deliberately or drop it.
 
 Settled by the brief and **not** open: the ΔΔG sign convention (destabilizing
 positive, kcal/mol, always with an interval), the >90% MSA conservation
 high-risk flag, and the 8 Å epistasis pair-flag distance.
 
-## 8. What Phase 5 will need to know
+## 8. What Phase 6 will need to know
 
-The workbench is a screen over data that already exists. Nothing below needs a
-schema change.
+Phase 6 is real `ESMScorer` + `StabilityPredictor`. The seam is already there and
+the mock is the proof it fits.
 
-- **`GET /runs/{id}/ranking?limit=` is the table's source.** It returns rank,
-  code, `hgvs`, `label`, `sequence_position`, consensus, disagreement, and one
-  cell per metric carrying value, uncertainty, interval, `model_version_id` and
-  `is_mock`. Omit `limit` for the whole ranking — 3,439 rows on the seeded
-  lipase, which is the virtualisation test. `unavailable` maps a metric id to the
-  reason it has no values; render those cells as `—` with that text, never zero.
-- **Provenance in two clicks** is `model_version_id` on every cell →
-  `ModelVersion` (name, version, weights hash, citation, `is_mock`) → the
-  `RunStage` that produced it, with its own input hash and logs. The run view
-  already renders the second half of that trail; the drawer needs the first.
-- **`GET /runs/{id}/filtered`** returns `{code: [constraint kinds]}` from the
-  provenance event the filter stage wrote. That is the "retrievable with the
-  reason shown" requirement, already in the shape a panel wants.
-- **Mutation codes are already written in the canonical scheme.** `code` is
-  `S77A`, not `S108A`; `sequence_position` is the index behind it and is for the
-  structure viewer, not for display. Do not render it as a residue number.
-- **`Variant.features` is an empty dict on every row.** RSA, conservation and
-  distance-to-active-site need an MSA provider and settled RSA cutoffs. The
-  rationale paragraph the brief asks for must be composed from feature values
-  that exist — with none yet, say so rather than write a paragraph from nothing.
-- **Zustand is not installed.** `ARCHITECTURE.md` §7 says it enters in Phase 5
-  for selection, filters and panel sizes. TanStack Query is installed and the
-  provider wraps the whole tree already.
-- **TanStack Table and TanStack Virtual are not installed.** Phase 5 is where
-  they land, per `BRIEF.md` §3.
-- The `worker` container is in compose and `GET /queue` reports whether anything
-  is consuming the queue. The run view uses it to explain a stalled run instead
-  of spinning; the workbench probably does not need it.
+- **Implement the `Predictor` protocol in `providers/`** and register it in
+  `providers/registry.py`. Nothing under `apps/web/components` should change —
+  that is the test ARCHITECTURE.md §2 states, and it is worth actually running.
+- **`objectives` is the open decision** (§7). State it per predictor. Do not copy
+  the mock's list.
+- **`is_mock=False` turns the whole demo apparatus off by itself**: the amber bar,
+  the per-number asterisk, `is_demo` on the run and the ranking. There is no
+  second switch to remember, and `/meta` derives the flag from the predictors
+  rather than from `CATALYST_PROVIDERS`.
+- **A predictor that needs a GPU declares `needs_gpu`**, but nothing checks it
+  yet — `Capabilities.unmet` only tests structure, MSA and length. Add the check
+  when there is a real predictor that would fail without one.
+- **The MSA provider is the other half.** `build MSA` is a real stage that
+  currently always skips, and conservation is deliberately not rendered (it is in
+  the column menu, disabled, labelled "Requires MSA (Phase 6)"). Once an MSA
+  exists: enable that column, and add the >90% conservation high-risk flag, which
+  `BRIEF.md` §7 settles and which nothing currently implements.
+- **Scores are content-addressed and cached across runs** on
+  `hash(model_version + inputs)`. A real predictor gets that for free, which
+  matters much more when a scoring stage costs GPU-minutes rather than a second.
+  Bumping `version` or `weights_hash` correctly invalidates it.
+- **`Variant.features` is still an empty dict.** Geometry lives in the run's
+  `FEATURES_COMPUTED` provenance event, keyed by sequence position. Conservation
+  should follow the same pattern rather than being written onto the variant row:
+  a variant is shared across runs, an MSA is not.
+- **`GET /runs/{id}/ranking` omits `limit` at your peril** — it applies the run's
+  *budget*, not "everything". Pass `limit` for the whole ranking, and
+  `include_filtered=true` to get constraint-removed variants back with their
+  reasons. (An earlier version of this file said the opposite; it was wrong.)
 
 ## 9. Machine quirks
 
@@ -231,6 +282,14 @@ schema change.
 - **The Windows console is cp1252** and cannot encode `→` or `°`.
   `verify_gates.py` reconfigures its own streams to UTF-8; anything else printing
   those characters needs `PYTHONIOENCODING=utf-8`.
+- **The agent's browser pane runs hidden, so the page never composites.**
+  `requestAnimationFrame` does not fire, which means anything driven by animation
+  frames — virtualised scrolling, transitions, `screenshot` — cannot be observed
+  or measured from an agent session. Plain DOM reads, `fetch`, timers and
+  MutationObserver all work. Anything visual needs a human with a real browser.
+- **`docker compose rm -f web` does not drop the anonymous `node_modules`
+  volumes**, so a rebuilt image still starts with stale dependencies. Use
+  `docker compose rm -fsv web` (note the `v`) and then `up -d`.
 
 ## 10. Working agreement
 

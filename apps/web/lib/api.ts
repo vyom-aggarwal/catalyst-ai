@@ -281,9 +281,20 @@ export function rerun(
   return send(`/runs/${runId}/rerun`, body, runSchema)
 }
 
-export function fetchRanking(runId: string, limit?: number): Promise<Ranking> {
-  const query = limit === undefined ? '' : `?limit=${limit}`
-  return request(`/runs/${runId}/ranking${query}`, rankingSchema)
+/**
+ * Omitting `limit` applies the run's own budget, which is usually a handful of
+ * rows. Pass a limit to get the whole ranking.
+ */
+export function fetchRanking(
+  runId: string,
+  limit?: number,
+  options: { includeFiltered?: boolean } = {},
+): Promise<Ranking> {
+  const query = new URLSearchParams()
+  if (limit !== undefined) query.set('limit', String(limit))
+  if (options.includeFiltered) query.set('include_filtered', 'true')
+  const suffix = query.size > 0 ? `?${query.toString()}` : ''
+  return request(`/runs/${runId}/ranking${suffix}`, rankingSchema)
 }
 
 /** Variants a constraint removed, each with the constraint that removed it. */

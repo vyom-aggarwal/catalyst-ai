@@ -20,6 +20,12 @@ dependencies = [
     # user confirms; it never produces a scientific number. The deterministic
     # fallback in catalyst.parsers.rules runs whenever no key is configured.
     "anthropic>=0.69.0",
+    # Solvent accessibility (Shrake-Rupley) with the ProtOr radii of Tsai et al.
+    # 1999. Deliberately not hand-rolled: the hidden parameter in a SASA
+    # calculation is the van der Waals radii set, and an unvalidated radii table
+    # moves residues across the core/surface boundary invisibly. Validated
+    # against published DSSP output in tests/test_sasa.py.
+    "biotite>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -62,8 +68,16 @@ disallow_untyped_defs = true
 warn_return_any = false
 
 [[tool.mypy.overrides]]
-module = ["rq.*", "alembic.*"]
+module = ["rq.*", "alembic.*", "biotite.*"]
 ignore_missing_imports = true
+
+# Biotite's AtomArray is a runtime-typed container: attribute access returns Any
+# because the annotation categories are dynamic. Confined to the one module that
+# touches coordinates.
+[[tool.mypy.overrides]]
+module = "catalyst.features.structure"
+disallow_any_expr = false
+warn_return_any = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -6,12 +6,13 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlmodel import Session, col
 
 from catalyst.db import get_session
 from catalyst.models import Experiment, Measurement, Project, Run, Target
+from catalyst.services import projects as project_service
 from catalyst.services import targets as service
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -111,6 +112,18 @@ class TargetSummary(BaseModel):
     canonical_scheme_label: str | None
 
 
+class RsaCutoffs(BaseModel):
+    """Where core stops and surface starts.
+
+    A scientific decision, so it is visible and editable rather than compiled in,
+    and whatever is in force when a run executes is copied into that run's
+    feature provenance record.
+    """
+
+    core_max: float = Field(ge=0.0, le=1.0)
+    surface_min: float = Field(ge=0.0, le=1.0)
+
+
 class ProjectDetail(BaseModel):
     id: uuid.UUID
     name: str
@@ -118,6 +131,7 @@ class ProjectDetail(BaseModel):
     objective: str | None
     created_at: datetime
     targets: list[TargetSummary]
+    rsa_cutoffs: RsaCutoffs
 
 
 @router.post("", response_model=ProjectDetail, status_code=201)
@@ -176,6 +190,7 @@ def _detail(session: Session, project: Project) -> ProjectDetail:
             )
         )
 
+    cutoffs = project_service.cutoffs_for(project)
     return ProjectDetail(
         id=project.id,
         name=project.name,
@@ -183,4 +198,30 @@ def _detail(session: Session, project: Project) -> ProjectDetail:
         objective=project.objective,
         created_at=project.created_at,
         targets=summaries,
+        rsa_cutoffs=RsaCutoffs(core_max=cutoffs.core_max, surface_min=cutoffs.surface_min),
     )
+
+
+@router.post("/{project_id}/settings/rsa-cutoffs", response_model=ProjectDetail)
+def set_rsa_cutoffs(
+    project_id: uuid.UUID, body: RsaCutoffs, session: Session = Depends(get_session)
+) -> ProjectDetail:
+    """Change the burial cutoffs for this project.
+
+    Earlier runs are untouched: each one recorded the values that were in force
+    when it executed, so a run remains a record of what happened rather than a
+    view through today's settings.
+    """
+    try:
+        project = project_service.update_cutoffs(
+            session,
+            project_id=project_id,
+            core_max=body.core_max,
+            surface_min=body.surface_min,
+        )
+    except service.ServiceError as error:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": str(error), "remedy": error.remedy},
+        ) from error
+    return _detail(session, project)

@@ -368,7 +368,7 @@ class ReconciliationPreview:
 
 
 def _chain_for(session: Session, structure: Structure, chain_id: str | None) -> Chain:
-    fetched = _refetch(structure)
+    fetched = refetch_structure(structure)
     parsed = parse_pdb(fetched.text)
     chains = parsed.protein_chains
     if chain_id:
@@ -382,7 +382,7 @@ def _chain_for(session: Session, structure: Structure, chain_id: str | None) -> 
     return chains[0]
 
 
-def _refetch(structure: Structure) -> structures.FetchedStructure:
+def refetch_structure(structure: Structure) -> structures.FetchedStructure:
     """Re-retrieve a structure by its recorded identity.
 
     Phase 2 does not store structure files, so they are fetched again on demand.

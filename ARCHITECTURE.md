@@ -53,6 +53,12 @@ Dependencies point downward only. A module never imports from a layer above it.
      │           imported. Each provider is self-contained and declares its own
      │           Capabilities. MockProvider lives here too.
      │
+  features/      Derived structural features: solvent accessibility, burial
+     │           class, distance to the annotated active site. Beside providers/
+     │           rather than inside it, because these are neither model output
+     │           nor a download — they are a deterministic calculation over
+     │           coordinates the user loaded. See §11.
+     │
   sources/       External retrieval and parsing: UniProt, RCSB, AlphaFold DB,
      │           PDB and FASTA. No model runs here — these are downloads — which
      │           is why they sit beside providers/ rather than inside it.
@@ -250,7 +256,7 @@ inferred.
 | Initial page data (projects, targets, schemes)    | **Server components**, fetched per request |
 | Mutations (create, attach, reconcile, confirm)    | **Server actions** in `app/actions.ts`     |
 | Live/polled state (run progress, workbench table) | **TanStack Query** — arrived in Phase 4    |
-| Workbench UI state (selection, filters, panels)   | **Zustand** — arrives in Phase 5           |
+| Workbench UI state (selection, filters, panels)   | **Zustand** — arrived in Phase 5           |
 | URL-addressable state (project, run, variant)     | **The route** — deep links must work       |
 
 No Redux. Server data is never copied into Zustand; the store holds selection and view
@@ -407,3 +413,108 @@ Saving a reconciled mapping creates a scheme. It does **not** make it canonical.
 thing that makes a target designable. Until then the API refuses to render a mutation
 code at all, with a 409 — a code rendered against an unconfirmed scheme is precisely
 the ambiguity this phase removes.
+
+---
+
+## 11. Derived features
+
+Solvent accessibility, burial class and distance to the active site are computed, not
+predicted. They live in `features/` — a layer of their own, beside `providers/` — and
+specification §2.2 applies to them exactly as it applies to a model score: every number
+traces to the parameters that produced it.
+
+### The calculation is not ours
+
+`biotite.structure.sasa` (Shrake-Rupley, ProtOr radii of Tsai et al. 1999) rather than an
+implementation of our own. The hidden parameter in a solvent-accessibility calculation is
+not the probe radius, it is the van der Waals radii set, and an unvalidated radii table
+moves residues across the core/surface boundary without changing a coordinate.
+
+That claim is measured, not asserted. On TEM-1 (PDB 1BTL, 263 residues):
+
+| Change                             | Residues that change region | Correlation with published DSSP |
+| ---------------------------------- | --------------------------- | ------------------------------- |
+| ProtOr → uniform radius            | 8 (3.0%)                    | **rises** to 0.998              |
+| Tien 2013 theoretical → Miller 1987 | 27 (10.3%)                  | unchanged (same ASA)            |
+
+The first row is why `tests/test_sasa.py` carries **two** tests rather than one.
+Agreement with published DSSP output validates the absolute numbers and catches gross
+errors — wrong probe radius, hydrogens included, ligands in the reported value. It
+provably cannot catch a radii swap, so a golden per-residue table pins the radii set and
+the normalisation table as well. Both fixtures are committed and the suite stays
+hermetic; the DSSP files are real output from the PDB-REDO DSSP databank, and a test
+asserts they were computed on the same coordinates this repository feeds to biotite.
+
+### Every parameter is stated
+
+- **Normalisation**: `domain/constants/max_asa` — Tien et al. 2013, theoretical column,
+  with the DOI. One copy, because a second copy is a second answer to which residues are
+  buried. Miller 1987 and Rose 1985 understate the maxima and produce residues at RSA
+  1.00, where the theoretical set tops out at 0.84 on the same coordinates.
+- **SASA**: probe 1.4 Å, 1000 points, Fibonacci distribution, ProtOr radii, heavy atoms
+  only, waters and monoatomic ions stripped. No library defaults.
+- **Cutoffs**: core RSA < 0.25, boundary 0.25–0.40, surface > 0.40. A **project setting**
+  (`Project.settings`) rather than a constant, because it is a scientific decision.
+- **Coordinates**: whatever the user loaded, described as it actually is. A dimer-interface
+  residue is buried in the assembly and exposed in the monomer, and that difference decides
+  the mutation, so the manifest states what was measured rather than claiming an assembly.
+- **Ligands**: excluded from the reported ASA — a cofactor is not the protein — but a
+  second pass includes them and flags any residue whose RSA drops by more than 0.10.
+  Without that flag the apo calculation makes active-site residues look solvent-exposed,
+  which is the most misleading thing the column can say.
+
+All of it goes into a `FEATURES_COMPUTED` provenance event, per run, alongside the code
+version. The event is what `GET /runs/{id}/ranking` reads: features are **not** recomputed
+on read, so changing a project's cutoffs tomorrow cannot restate what a run said today.
+
+### The active site is annotated, never inferred
+
+It is exactly the residue set the user marked catalytic or ligand-contacting on the
+constraints screen. No pocket detection, no database lookup, no heuristic. With none
+annotated the column reads `—` with a tooltip pointing at the constraints screen.
+
+Distance is the minimum separation between any non-hydrogen atom of the residue and any
+non-hydrogen atom of that set — not Cα–Cα. An arginine side chain reaches roughly 7 Å past
+its own Cα, so a Cα measurement would report a residue as clear of the pocket while its
+side chain sits inside it.
+
+### Numbering, once more
+
+Features are computed only when a **reconciled PDB-author scheme** exists for the
+structure, and they are keyed by sequence index on the way out. Each carries the
+structure's own `author_label` as well, because the viewer addresses residues in author
+numbering while the table shows the canonical scheme — on the seeded lipase those are 108
+and Ser77 for the same residue. Nothing converts between them by arithmetic (§9).
+
+---
+
+## 12. The workbench
+
+Screen §5.6. Three panes, resizable, sizes persisted; the whole ranking in the middle.
+
+**Virtualisation.** TanStack Table for the column model and sorting, TanStack Virtual for
+rendering. The work per frame is constant rather than proportional to the row count: only
+the visible window plus overscan is mounted, rows are memoised, and each row subscribes to
+its own selection flag so clicking one row re-renders one row. Measured on a 10,450-row
+ranking: 32 `<tr>` in the DOM and 772 DOM nodes for the whole page.
+
+Semantic table markup is kept — spacer rows above and below the window give the scroll its
+height, rather than absolutely positioning rows out of the table.
+
+**Row height is duplicated into JavaScript**, because virtualisation needs it as a number.
+`test/workbench.test.ts` asserts the constant still matches `DESIGN.md`.
+
+**The rationale is a pure function** of the row (`lib/rationale.ts`), never a language
+model. Each clause names the field it rests on, so it can be checked against a column, and
+a feature that was not measured produces no sentence rather than a hedge. A test asserts
+that every numeral in the composed text appears in the row's own data.
+
+**Conservation is not rendered.** It is in the column menu, disabled, labelled "Requires
+MSA (Phase 6)". A column where every cell is an em dash trains the reader to stop reading
+em dashes, and the dash means something specific: unavailable, here is why.
+
+**Mol\*** is created headless (`PluginContext` with a bare canvas), not through
+`createPluginUI`, which would bring another product's toolbars into the inspector. It is
+dynamically imported and browser-only. Coordinates are served by our own API
+(`GET /targets/{id}/structure`) so the content hash recorded at attach time is verified on
+the way through and the viewer cannot render a file that changed underneath the target.

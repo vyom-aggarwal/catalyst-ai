@@ -3,6 +3,7 @@
 import type { Meta, Run, RunStatus } from '@catalyst/schema'
 import { useQuery } from '@tanstack/react-query'
 import type { Route } from 'next'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 
@@ -210,6 +211,10 @@ export function RunView({
           )}
 
           {filteredQuery.data ? <FilteredPanel filtered={filteredQuery.data} /> : null}
+
+          <Button variant="primary" asChild>
+            <Link href={`/runs/${run.id}/workbench` as Route}>Open the variant workbench</Link>
+          </Button>
         </section>
       ) : null}
 

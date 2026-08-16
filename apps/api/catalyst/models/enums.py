@@ -96,6 +96,11 @@ class ProvenanceEventKind(StrEnum):
     GOAL_CONFIRMED = "goal_confirmed"
     RUN_STARTED = "run_started"
     RUN_STAGE_COMPLETED = "run_stage_completed"
+    #: Derived structural features and the full parameter manifest that produced
+    #: them. A relative solvent accessibility is as traceable as a model score:
+    #: the reference table, its DOI, the radii set, the cutoffs in force and the
+    #: coordinate set all live in this event's payload.
+    FEATURES_COMPUTED = "features_computed"
     RUN_COMPLETED = "run_completed"
     RUN_CANCELLED = "run_cancelled"
     SCORES_WRITTEN = "scores_written"
