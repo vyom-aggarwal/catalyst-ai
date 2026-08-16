@@ -157,7 +157,7 @@ const ranking: Ranking = {
   ],
 }
 
-function renderWorkbench() {
+function renderWorkbench(withRun: Run = run, withRanking: Ranking = ranking) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const clicks: string[] & { container?: HTMLElement } = []
   document.addEventListener(
@@ -172,8 +172,8 @@ function renderWorkbench() {
   const view = render(
     <QueryClientProvider client={client}>
       <Workbench
-        run={run}
-        initialRanking={ranking}
+        run={withRun}
+        initialRanking={withRanking}
         targetName="Luciferin 4-monooxygenase"
         apiBase="http://localhost:8000"
       />
@@ -301,5 +301,128 @@ describe('a score traces to a model version in two clicks', () => {
 
     // The badge follows the number wherever it is shown, not just in the table.
     expect(screen.getByLabelText('Provenance')).toHaveTextContent('Synthetic — not model output')
+  })
+})
+
+/**
+ * The gate says *any* score, and the fixture above carries one. A run with two
+ * predictors is the ordinary case — it is what makes the disagreement column
+ * mean anything — so the count has to hold for the second score as well as the
+ * first, and the second must reach its *own* model version rather than whichever
+ * one the drawer happened to open on.
+ *
+ * Verified live in a browser on a second variant and the other metric; this is
+ * the part of that run a test can keep.
+ */
+const FITNESS_MODEL_VERSION_ID = '4eebd010-a1cc-4fe0-aee0-b9f8afeb41bb'
+const FITNESS_WEIGHTS = 'sha256:73115dbda78d974e803ada2f5ff4d87bd3b92de40606f0a7cfc1a32e8fb187eb'
+
+const runWithBoth: Run = {
+  ...run,
+  config: { ...run.config, predictors: ['mock_stability', 'mock_fitness'] },
+  stages: [
+    ...run.stages,
+    {
+      id: '55555555-5555-5555-5555-555555555555',
+      ordinal: 3,
+      name: 'score with Mock fitness predictor',
+      status: 'succeeded',
+      runtime_ms: 2563,
+      input_hash: 'sha256:b5e19f84ac03',
+      logs: 'Wrote 10,450 scores.',
+      error: null,
+      model: {
+        id: FITNESS_MODEL_VERSION_ID,
+        model_id: 'mock_fitness',
+        name: 'Mock fitness predictor',
+        version: '0.1.0',
+        weights_hash: FITNESS_WEIGHTS,
+        modality: 'fitness',
+        citation: 'No citation. Synthetic output. Not a model and not a prediction.',
+        is_mock: true,
+      },
+    },
+  ],
+}
+
+const firstRow = ranking.rows[0]!
+const rankingWithBoth: Ranking = {
+  ...ranking,
+  metrics: [
+    ...ranking.metrics,
+    {
+      id: 'fitness_llr',
+      label: 'Fitness log-likelihood ratio',
+      unit: null,
+      sign_convention: 'mutant minus wild type; higher is more favourable',
+      higher_is_better: true,
+      reports_interval: false,
+    },
+  ],
+  rows: [
+    {
+      ...firstRow,
+      cells: [
+        ...firstRow.cells,
+        {
+          metric: 'fitness_llr',
+          value: 1.72,
+          uncertainty: null,
+          ci_low: null,
+          ci_high: null,
+          model_version_id: FITNESS_MODEL_VERSION_ID,
+          model_id: 'mock_fitness',
+          is_mock: true,
+        },
+      ],
+    },
+  ],
+}
+
+describe('"any score" means each score, not just the first', () => {
+  beforeEach(() => {
+    useWorkbench.setState({ selected: [], focused: null, anchor: null })
+  })
+
+  it('offers one trace per score, so neither is reachable only through the other', async () => {
+    const user = userEvent.setup()
+    renderWorkbench(runWithBoth, rankingWithBoth)
+
+    await user.click(cellFor('I40S'))
+
+    const traces = screen.getAllByRole('button', { name: 'Trace' })
+    expect(traces).toHaveLength(2)
+    for (const trace of traces) expect(trace).toBeVisible()
+  })
+
+  it('reaches the second score\u2019s own model version, still in two clicks', async () => {
+    const user = userEvent.setup()
+    const clicks = renderWorkbench(runWithBoth, rankingWithBoth)
+
+    await user.click(cellFor('I40S'))
+    const traces = screen.getAllByRole('button', { name: 'Trace' })
+    await user.click(traces[1] as HTMLElement)
+
+    expect(clicks).toHaveLength(2)
+
+    const drawer = screen.getByLabelText('Provenance')
+    // Its own model version, not the stability one the first Trace would open.
+    expect(drawer).toHaveTextContent('Mock fitness predictor')
+    expect(drawer).toHaveTextContent(FITNESS_WEIGHTS)
+    expect(drawer).toHaveTextContent('score with Mock fitness predictor')
+    expect(drawer).toHaveTextContent('fitness_llr')
+    expect(drawer).not.toHaveTextContent(WEIGHTS_HASH)
+  })
+
+  it('says a point estimate has no interval rather than showing an invented one', async () => {
+    const user = userEvent.setup()
+    renderWorkbench(runWithBoth, rankingWithBoth)
+
+    await user.click(cellFor('I40S'))
+    await user.click(screen.getAllByRole('button', { name: 'Trace' })[1] as HTMLElement)
+
+    // A masked-marginal log-odds ratio genuinely has no interval. Inventing one
+    // at the end of the provenance trail would be worse than omitting it.
+    expect(screen.getByLabelText('Provenance')).toHaveTextContent(/no interval was invented/i)
   })
 })

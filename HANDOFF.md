@@ -70,7 +70,7 @@ now takes a few minutes and several UniProt/AlphaFold fetches.
 Per-package gates, all currently green:
 
 ```sh
-pnpm typecheck && pnpm lint && pnpm test           # 119 vitest
+pnpm typecheck && pnpm lint && pnpm test           # 122 vitest
 cd apps/api && .venv/Scripts/python -m pytest -q   # 241 pytest
 cd apps/api && .venv/Scripts/ruff check . && .venv/Scripts/mypy catalyst
 ```
@@ -146,6 +146,13 @@ control behind a closed disclosure — a genuine third click — passed it, beca
 jsdom keeps the contents of a closed `<details>` in the tree. If you touch the
 inspector or the drawer, re-run the mutation check rather than trusting a green
 tick.
+
+The word doing the work in that gate is **any**. The original fixture carried one
+metric, so "each score reaches its *own* model version" was verified in the
+browser but not guarded — a mutation pointing every Trace at the first score
+passed all six tests. There is now a two-predictor block that catches it, which is
+the ordinary case anyway: two predictors are what make the disagreement column
+mean anything.
 
 **Mol\* has never been looked at.** It reports `ready` — WebGL initialised, the
 coordinates were fetched from our own API, parsed, and the default preset
