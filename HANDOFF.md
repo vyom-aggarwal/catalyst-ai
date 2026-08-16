@@ -70,7 +70,7 @@ now takes a few minutes and several UniProt/AlphaFold fetches.
 Per-package gates, all currently green:
 
 ```sh
-pnpm typecheck && pnpm lint && pnpm test           # 113 vitest
+pnpm typecheck && pnpm lint && pnpm test           # 119 vitest
 cd apps/api && .venv/Scripts/python -m pytest -q   # 241 pytest
 cd apps/api && .venv/Scripts/ruff check . && .venv/Scripts/mypy catalyst
 ```
@@ -133,6 +133,19 @@ That establishes the property 60fps depends on — the work per frame is constan
 rather than proportional to the row count — but it is **not** a frame rate.
 **Someone with a visible browser must scroll it and watch.** Until then, do not
 claim the Phase 5 gate is fully met.
+
+The gate's **other** half — "any score traces to a model version in two clicks" —
+*is* verified, literally. Counted in a real browser with trusted clicks (row,
+then Trace) for two different variants and both metrics, and locked by
+`test/two-clicks.test.tsx`, which asserts the model version is invisible at zero
+and one clicks and visible at two.
+
+That test asserts **visibility**, not presence, and the difference is the point:
+the first version checked presence, and a deliberate mutation hiding the Trace
+control behind a closed disclosure — a genuine third click — passed it, because
+jsdom keeps the contents of a closed `<details>` in the tree. If you touch the
+inspector or the drawer, re-run the mutation check rather than trusting a green
+tick.
 
 **Mol\* has never been looked at.** It reports `ready` — WebGL initialised, the
 coordinates were fetched from our own API, parsed, and the default preset
